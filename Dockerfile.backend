@@ -1,0 +1,41 @@
+# Dockerfile для AI Call Intake Backend
+FROM python:3.10-slim
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создание рабочей директории
+WORKDIR /app
+
+# Копирование requirements файла
+COPY requirements.txt .
+
+# Установка Python зависимостей
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Установка Whisper (опционально, можно использовать API)
+RUN pip install --no-cache-dir openai-whisper
+
+# Копирование исходного кода
+COPY . .
+
+# Создание необходимых директорий
+RUN mkdir -p /app/logs /app/tts_cache /app/recordings
+
+# Создание пользователя для безопасности
+RUN useradd -m -u 1000 -s /bin/bash appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# Экспорт портов
+EXPOSE 8000
+
+# Команда запуска
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

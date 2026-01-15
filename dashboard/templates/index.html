@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Call Intake System - Dashboard</title>
+
+    <!-- Bootstrap 5 CSS -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <!-- Font Awesome -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+    />
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+      :root {
+        --primary-color: #0d6efd;
+        --danger-color: #dc3545;
+        --warning-color: #ffc107;
+        --success-color: #198754;
+        --info-color: #0dcaf0;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background-color: #f8f9fa;
+      }
+
+      .navbar-brand {
+        font-weight: 600;
+      }
+
+      .card {
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+        border: none;
+      }
+
+      .card-header {
+        background-color: white;
+        border-bottom: 2px solid #f0f0f0;
+        font-weight: 600;
+        padding: 15px 20px;
+      }
+
+      .stat-card {
+        text-align: center;
+        padding: 20px;
+        transition: transform 0.3s;
+      }
+
+      .stat-card:hover {
+        transform: translateY(-5px);
+      }
+
+      .stat-icon {
+        font-size: 2.5rem;
+        margin-bottom: 10px;
+      }
+
+      .stat-value {
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 10px 0;
+      }
+
+      .stat-label {
+        color: #6c757d;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
+      .badge-urgency {
+        padding: 5px 10px;
+        border-radius: 20px;
+        font-weight: 600;
+      }
+
+      .badge-critical {
+        background-color: #dc3545;
+        color: white;
+      }
+
+      .badge-high {
+        background-color: #fd7e14;
+        color: white;
+      }
+
+      .badge-medium {
+        background-color: #ffc107;
+        color: black;
+      }
+
+      .badge-low {
+        background-color: #198754;
+        color: white;
+      }
+
+      .call-row {
+        border-left: 4px solid #dee2e6;
+        padding: 15px;
+        margin-bottom: 10px;
+        background-color: white;
+        border-radius: 5px;
+        transition: all 0.2s;
+      }
+
+      .call-row:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        transform: translateX(2px);
+      }
+
+      .call-row.critical {
+        border-left-color: #dc3545;
+      }
+
+      .call-row.high {
+        border-left-color: #fd7e14;
+      }
+
+      .call-row.medium {
+        border-left-color: #ffc107;
+      }
+
+      .call-row.low {
+        border-left-color: #198754;
+      }
+
+      .call-time {
+        font-size: 0.85rem;
+        color: #6c757d;
+      }
+
+      .call-summary {
+        font-weight: 500;
+        margin-bottom: 5px;
+      }
+
+      .call-details {
+        font-size: 0.9rem;
+        color: #6c757d;
+      }
+
+      .filter-btn {
+        margin-right: 5px;
+        margin-bottom: 5px;
+      }
+
+      .loading {
+        text-align: center;
+        padding: 40px;
+        color: #6c757d;
+      }
+
+      .no-data {
+        text-align: center;
+        padding: 40px;
+        color: #6c757d;
+        font-style: italic;
+      }
+
+      .json-view {
+        background-color: #f8f9fa;
+        border-radius: 5px;
+        padding: 15px;
+        font-family: "Courier New", monospace;
+        font-size: 0.85rem;
+        max-height: 300px;
+        overflow-y: auto;
+      }
+
+      @media (max-width: 768px) {
+        .stat-value {
+          font-size: 1.5rem;
+        }
+
+        .stat-icon {
+          font-size: 2rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="#">
+          <i class="fas fa-phone-alt me-2"></i>
+          AI Call Intake System
+        </a>
+        <button
+          class="navbar-toggler"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#navbarNav"
+        >
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+          <ul class="navbar-nav ms-auto">
+            <li class="nav-item">
+              <a class="nav-link active" href="#"
+                ><i class="fas fa-tachometer-alt me-1"></i> Dashboard</a
+              >
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="#" onclick="showCalls()"
+                ><i class="fas fa-history me-1"></i> All Calls</a
+              >
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="#" onclick="showStatistics()"
+                ><i class="fas fa-chart-bar me-1"></i> Statistics</a
+              >
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="#" onclick="exportData()"
+                ><i class="fas fa-download me-1"></i> Export</a
+              >
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/api/health" target="_blank"
+                ><i class="fas fa-heartbeat me-1"></i> Health</a
+              >
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="container-fluid mt-4">
+      <!-- Dashboard Header -->
+      <div class="row mb-4">
+        <div class="col">
+          <h2 class="mb-0">Dashboard</h2>
+          <p class="text-muted">
+            Real-time monitoring of AI call intake system
+          </p>
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-outline-primary" onclick="refreshData()">
+            <i class="fas fa-sync-alt me-1"></i> Refresh
+          </button>
+          <span id="lastUpdated" class="text-muted ms-3"></span>
+        </div>
+      </div>
+
+      <!-- Statistics Cards -->
+      <div class="row" id="statsCards">
+        <div class="col-md-3">
+          <div class="card stat-card">
+            <div class="stat-icon text-primary">
+              <i class="fas fa-phone"></i>
+            </div>
+            <div class="stat-value" id="totalCalls">0</div>
+            <div class="stat-label">Total Calls</div>
+            <div class="text-muted mt-2" id="todayCalls">0 today</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card stat-card">
+            <div class="stat-icon text-danger">
+              <i class="fas fa-exclamation-triangle"></i>
+            </div>
+            <div class="stat-value" id="criticalCalls">0</div>
+            <div class="stat-label">Critical</div>
+            <div class="text-muted mt-2" id="recentCritical">0 recent</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card stat-card">
+            <div class="stat-icon text-warning">
+              <i class="fas fa-chart-line"></i>
+            </div>
+            <div class="stat-value" id="avgDuration">0s</div>
+            <div class="stat-label">Avg Duration</div>
+            <div class="text-muted mt-2" id="changePercentage">0% change</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card stat-card">
+            <div class="stat-icon text-success">
+              <i class="fas fa-database"></i>
+            </div>
+            <div class="stat-value" id="dangerCalls">0</div>
+            <div class="stat-label">Danger Cases</div>
+            <div class="text-muted mt-2" id="weaponCalls">0 with weapons</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts and Recent Calls -->
+      <div class="row">
+        <!-- Left Column: Charts -->
+        <div class="col-lg-8">
+          <div class="card">
+            <div
+              class="card-header d-flex justify-content-between align-items-center"
+            >
+              <span
+                ><i class="fas fa-chart-pie me-2"></i> Call Distribution</span
+              >
+              <div>
+                <button
+                  class="btn btn-sm btn-outline-secondary"
+                  onclick="updateChart('urgency')"
+                >
+                  By Urgency
+                </button>
+                <button
+                  class="btn btn-sm btn-outline-secondary"
+                  onclick="updateChart('category')"
+                >
+                  By Category
+                </button>
+              </div>
+            </div>
+            <div class="card-body">
+              <canvas id="distributionChart" height="250"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column: System Status -->
+        <div class="col-lg-4">
+          <div class="card">
+            <div class="card-header">
+              <i class="fas fa-info-circle me-2"></i> System Status
+            </div>
+            <div class="card-body">
+              <div class="mb-3">
+                <div class="d-flex justify-content-between mb-1">
+                  <span>Database</span>
+                  <span class="badge bg-success" id="dbStatus">Connected</span>
+                </div>
+                <div class="progress" style="height: 5px">
+                  <div
+                    class="progress-bar bg-success"
+                    style="width: 100%"
+                  ></div>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <div class="d-flex justify-content-between mb-1">
+                  <span>AI Services</span>
+                  <span class="badge bg-success" id="aiStatus"
+                    >Operational</span
+                  >
+                </div>
+                <div class="progress" style="height: 5px">
+                  <div
+                    class="progress-bar bg-success"
+                    style="width: 100%"
+                  ></div>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <div class="d-flex justify-content-between mb-1">
+                  <span>Telephony</span>
+                  <span class="badge bg-success" id="telStatus">Active</span>
+                </div>
+                <div class="progress" style="height: 5px">
+                  <div
+                    class="progress-bar bg-success"
+                    style="width: 100%"
+                  ></div>
+                </div>
+              </div>
+
+              <div class="mt-4">
+                <h6>Quick Actions</h6>
+                <div class="d-grid gap-2">
+                  <button
+                    class="btn btn-sm btn-outline-primary"
+                    onclick="showCalls()"
+                  >
+                    <i class="fas fa-list me-1"></i> View All Calls
+                  </button>
+                  <button
+                    class="btn btn-sm btn-outline-danger"
+                    onclick="showCriticalCalls()"
+                  >
+                    <i class="fas fa-exclamation-circle me-1"></i> Critical
+                    Calls
+                  </button>
+                  <button
+                    class="btn btn-sm btn-outline-success"
+                    onclick="exportData()"
+                  >
+                    <i class="fas fa-file-export me-1"></i> Export Data
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Calls Table -->
+      <div class="row mt-4">
+        <div class="col-12">
+          <div class="card">
+            <div
+              class="card-header d-flex justify-content-between align-items-center"
+            >
+              <span><i class="fas fa-history me-2"></i> Recent Calls</span>
+              <div>
+                <button
+                  class="btn btn-sm btn-outline-primary filter-btn active"
+                  data-filter="all"
+                >
+                  All
+                </button>
+                <button
+                  class="btn btn-sm btn-outline-danger filter-btn"
+                  data-filter="critical"
+                >
+                  Critical
+                </button>
+                <button
+                  class="btn btn-sm btn-outline-warning filter-btn"
+                  data-filter="high"
+                >
+                  High
+                </button>
+                <button
+                  class="btn btn-sm btn-outline-info filter-btn"
+                  data-filter="medium"
+                >
+                  Medium
+                </button>
+                <button
+                  class="btn btn-sm btn-outline-success filter-btn"
+                  data-filter="low"
+                >
+                  Low
+                </button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div id="recentCallsContainer">
+                <div class="loading">
+                  <i class="fas fa-spinner fa-spin fa-2x mb-3"></i>
+                  <p>Loading recent calls...</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Call Details Modal -->
+      <div class="modal fade" id="callDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">Call Details</h5>
+              <button
+                type="button"
+                class="btn-close"
+                data-bs-dismiss="modal"
+              ></button>
+            </div>
+            <div class="modal-body" id="callDetailsContent">Loading...</div>
+            <div class="modal-footer">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                data-bs-dismiss="modal"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- Dashboard JavaScript -->
+    <script>
+      // Global variables
+      let currentChart = null;
+      let allCalls = [];
+
+      // Initialize dashboard
+      document.addEventListener("DOMContentLoaded", function () {
+        updateLastUpdated();
+        loadStatistics();
+        loadRecentCalls();
+        setupEventListeners();
+
+        // Auto-refresh every 30 seconds
+        setInterval(refreshData, 30000);
+      });
+
+      function updateLastUpdated() {
+        const now = new Date();
+        document.getElementById(
+          "lastUpdated"
+        ).textContent = `Last updated: ${now.toLocaleTimeString()}`;
+      }
+
+      function refreshData() {
+        loadStatistics();
+        loadRecentCalls();
+        updateLastUpdated();
+
+        // Show refresh feedback
+        const refreshBtn = document.querySelector(
+          'button[onclick="refreshData()"]'
+        );
+        const originalHtml = refreshBtn.innerHTML;
+        refreshBtn.innerHTML = '<i class="fas fa-check me-1"></i> Refreshed';
+        refreshBtn.classList.remove("btn-outline-primary");
+        refreshBtn.classList.add("btn-success");
+
+        setTimeout(() => {
+          refreshBtn.innerHTML = originalHtml;
+          refreshBtn.classList.remove("btn-success");
+          refreshBtn.classList.add("btn-outline-primary");
+        }, 2000);
+      }
+
+      function loadStatistics() {
+        fetch("/api/statistics?days=7")
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              const stats = data.statistics;
+
+              // Update cards
+              document.getElementById("totalCalls").textContent =
+                stats.total_calls || 0;
+              document.getElementById("todayCalls").textContent = `${
+                stats.today_calls || 0
+              } today`;
+              document.getElementById("criticalCalls").textContent =
+                stats.by_urgency?.critical || 0;
+              document.getElementById("recentCritical").textContent = `${
+                stats.recent_critical || 0
+              } recent`;
+              document.getElementById("avgDuration").textContent = `${
+                stats.avg_duration_seconds || 0
+              }s`;
+              document.getElementById("changePercentage").textContent = `${
+                stats.change_percentage || 0
+              }% change`;
+              document.getElementById("dangerCalls").textContent =
+                stats.danger_calls || 0;
+              document.getElementById("weaponCalls").textContent = `${
+                stats.weapon_calls || 0
+              } with weapons`;
+
+              // Update chart
+              updateChart("urgency", stats.by_urgency);
+            }
+          })
+          .catch((error) => {
+            console.error("Error loading statistics:", error);
+          });
+      }
+
+      function loadRecentCalls() {
+        fetch("/api/calls?per_page=10")
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              allCalls = data.calls;
+              displayCalls(allCalls);
+            }
+          })
+          .catch((error) => {
+            console.error("Error loading recent calls:", error);
+            document.getElementById("recentCallsContainer").innerHTML =
+              '<div class="no-data">Error loading calls</div>';
+          });
+      }
+
+      function displayCalls(calls) {
+        const container = document.getElementById("recentCallsContainer");
+
+        if (!calls || calls.length === 0) {
+          container.innerHTML = '<div class="no-data">No calls found</div>';
+          return;
+        }
+
+        let html = "";
+
+        calls.forEach((call) => {
+          const urgency = call.urgency || "medium";
+          const time = new Date(call.timestamp).toLocaleString();
+          const summary = call.summary || "No summary available";
+          const category = call.category || "other";
+          const address = call.address || "Not specified";
+
+          html += `
+                <div class="call-row ${urgency}" onclick="showCallDetails('${
+            call.call_id
+          }')">
+                    <div class="row align-items-center">
+                        <div class="col-md-1">
+                            <span class="badge badge-urgency badge-${urgency}">
+                                ${urgency.toUpperCase()}
+                            </span>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="call-time">${time}</div>
+                            <small class="text-muted">${
+                              call.caller_id || "Unknown"
+                            }</small>
+                        </div>
+                        <div class="col-md-5">
+                            <div class="call-summary">${summary}</div>
+                            <div class="call-details">
+                                <span class="badge bg-secondary me-2">${category}</span>
+                                <i class="fas fa-map-marker-alt me-1"></i>${address}
+                            </div>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="call-details">
+                                <i class="fas fa-users me-1"></i> ${
+                                  call.people_involved || 0
+                                } people
+                            </div>
+                        </div>
+                        <div class="col-md-2 text-end">
+                            <button class="btn btn-sm btn-outline-primary">
+                                Details <i class="fas fa-chevron-right ms-1"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                `;
+        });
+
+        container.innerHTML = html;
+      }
+
+      function showCallDetails(callId) {
+        fetch(`/api/calls/${callId}`)
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              const call = data.call;
+              const modalContent =
+                document.getElementById("callDetailsContent");
+
+              let html = `
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>Call Information</h6>
+                                <table class="table table-sm">
+                                    <tr>
+                                        <th>Call ID:</th>
+                                        <td>${call.call_id}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Caller:</th>
+                                        <td>${call.caller_id || "Unknown"}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Time:</th>
+                                        <td>${new Date(
+                                          call.timestamp
+                                        ).toLocaleString()}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Duration:</th>
+                                        <td>${
+                                          call.duration
+                                            ? call.duration.toFixed(1) + "s"
+                                            : "N/A"
+                                        }</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Language:</th>
+                                        <td>${call.language || "ru"}</td>
+                                    </tr>
+                                </table>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Classification</h6>
+                                <table class="table table-sm">
+                                    <tr>
+                                        <th>Urgency:</th>
+                                        <td><span class="badge badge-${
+                                          call.urgency
+                                        }">${call.urgency}</span></td>
+                                    </tr>
+                                    <tr>
+                                        <th>Category:</th>
+                                        <td>${call.category}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Address:</th>
+                                        <td>${call.address}</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Current Danger:</th>
+                                        <td>${
+                                          call.current_danger
+                                            ? '<span class="badge bg-danger">Yes</span>'
+                                            : '<span class="badge bg-success">No</span>'
+                                        }</td>
+                                    </tr>
+                                    <tr>
+                                        <th>Weapons:</th>
+                                        <td>${
+                                          call.weapons
+                                            ? '<span class="badge bg-danger">Yes</span>'
+                                            : '<span class="badge bg-success">No</span>'
+                                        }</td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-12">
+                                <h6>Transcript</h6>
+                                <div class="alert alert-light">
+                                    ${
+                                      call.transcript ||
+                                      "No transcript available"
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-12">
+                                <h6>AI Analysis</h6>
+                                <div class="json-view">
+                                    <pre>${JSON.stringify(
+                                      call.ai_response || {},
+                                      null,
+                                      2
+                                    )}</pre>
+                                </div>
+                            </div>
+                        </div>
+                        `;
+
+              modalContent.innerHTML = html;
+
+              // Show modal
+              const modal = new bootstrap.Modal(
+                document.getElementById("callDetailsModal")
+              );
+              modal.show();
+            }
+          })
+          .catch((error) => {
+            console.error("Error loading call details:", error);
+            document.getElementById("callDetailsContent").innerHTML =
+              '<div class="alert alert-danger">Error loading call details</div>';
+          });
+      }
+
+      function updateChart(type, data) {
+        const ctx = document
+          .getElementById("distributionChart")
+          .getContext("2d");
+
+        // Destroy previous chart
+        if (currentChart) {
+          currentChart.destroy();
+        }
+
+        let chartData, chartLabels, chartColors;
+
+        if (type === "urgency" || !data) {
+          // Default to urgency chart
+          const urgencyData = data || {
+            critical: 5,
+            high: 15,
+            medium: 45,
+            low: 35,
+          };
+
+          chartLabels = ["Critical", "High", "Medium", "Low"];
+          chartData = [
+            urgencyData.critical || 0,
+            urgencyData.high || 0,
+            urgencyData.medium || 0,
+            urgencyData.low || 0,
+          ];
+          chartColors = ["#dc3545", "#fd7e14", "#ffc107", "#198754"];
+        } else {
+          // Category chart (simplified)
+          chartLabels = [
+            "Theft",
+            "Assault",
+            "Domestic",
+            "Noise",
+            "Traffic",
+            "Other",
+          ];
+          chartData = [12, 8, 15, 20, 10, 35];
+          chartColors = [
+            "#6f42c1",
+            "#dc3545",
+            "#fd7e14",
+            "#20c997",
+            "#0dcaf0",
+            "#6c757d",
+          ];
+        }
+
+        currentChart = new Chart(ctx, {
+          type: "doughnut",
+          data: {
+            labels: chartLabels,
+            datasets: [
+              {
+                data: chartData,
+                backgroundColor: chartColors,
+                borderWidth: 1,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: "right",
+              },
+              tooltip: {
+                callbacks: {
+                  label: function (context) {
+                    const label = context.label || "";
+                    const value = context.raw || 0;
+                    const total = context.dataset.data.reduce(
+                      (a, b) => a + b,
+                      0
+                    );
+                    const percentage = Math.round((value / total) * 100);
+                    return `${label}: ${value} (${percentage}%)`;
+                  },
+                },
+              },
+            },
+          },
+        });
+      }
+
+      function setupEventListeners() {
+        // Filter buttons
+        document.querySelectorAll(".filter-btn").forEach((btn) => {
+          btn.addEventListener("click", function () {
+            // Update active state
+            document
+              .querySelectorAll(".filter-btn")
+              .forEach((b) => b.classList.remove("active"));
+            this.classList.add("active");
+
+            // Filter calls
+            const filter = this.getAttribute("data-filter");
+            if (filter === "all") {
+              displayCalls(allCalls);
+            } else {
+              const filtered = allCalls.filter(
+                (call) => call.urgency === filter
+              );
+              displayCalls(filtered);
+            }
+          });
+        });
+      }
+
+      function showCalls() {
+        // In a real implementation, this would navigate to a calls page
+        alert("All calls view would open here");
+      }
+
+      function showStatistics() {
+        // Refresh statistics
+        loadStatistics();
+
+        // Scroll to statistics section
+        document
+          .getElementById("statsCards")
+          .scrollIntoView({ behavior: "smooth" });
+      }
+
+      function showCriticalCalls() {
+        // Filter to show only critical calls
+        document
+          .querySelectorAll(".filter-btn")
+          .forEach((b) => b.classList.remove("active"));
+        document
+          .querySelector('.filter-btn[data-filter="critical"]')
+          .classList.add("active");
+
+        const filtered = allCalls.filter((call) => call.urgency === "critical");
+        displayCalls(filtered);
+      }
+
+      function exportData() {
+        // Trigger CSV download
+        window.open("/api/export/csv", "_blank");
+      }
+
+      // Initial chart
+      setTimeout(() => updateChart("urgency"), 500);
+    </script>
+  </body>
+</html>
