@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
@@ -10,48 +10,35 @@ import base64
 import sys
 from openai import OpenAI
 
-# Добавляем путь к родительской директории для импорта сервисов
+# Настройка путей и сервисов
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 load_dotenv()
 
-# Импорт сервисов
 from services.speech_to_text import SpeechToTextService
 from services.openai_classifier import OpenAIClassifierService
 from services.tts_service import TTSService
 
-app = FastAPI(title="AI Call Intake Module", version="1.0.0")
+app = FastAPI(title="AI Call Intake Module")
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# CORS и Логи
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Инициализация сервисов
-logger.info("Initializing services (Updated Version)...")
+# Инициализация (с проверкой)
 try:
     speech_service = SpeechToTextService()
     openai_classifier_service = OpenAIClassifierService()
     tts_service = TTSService()
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    logger.info("All services initialized successfully")
+    logger.info("✅ Services Initialized Successfully")
 except Exception as e:
-    logger.error(f"Error initializing services: {e}")
+    logger.error(f"❌ Error initializing services: {e}")
 
-# --- Models ---
-
+# --- Модели данных ---
 class ProcessCallRequest(BaseModel):
     sessionId: str
     audioData: str 
-    sampleRate: int = 16000
-    channels: int = 1
     history: List[Dict[str, str]] = [] 
 
 class ProcessCallResponse(BaseModel):
@@ -60,100 +47,76 @@ class ProcessCallResponse(BaseModel):
     audioBase64: Optional[str] = None
     incident: Dict[str, Any] = {}
 
-# --- System Prompt ---
-DISPATCHER_SYSTEM_PROMPT = """Ты — диспетчер экстренных служб 102 (полиция Казахстана).
-Твоя задача — профессионально общаться с заявителем.
-
-ПРИНЦИПЫ:
-1. ПРИОРИТЕТ ЖИЗНИ: Если угроза жизни, оружие или насилие — СРАЗУ говори, что наряд выехал.
-2. СТИЛЬ: Говори КРАТКО (макс. 1-2 предложения). Четкие команды.
-3. СБОР ДАННЫХ: Узнай ЧТО случилось, ГДЕ (адрес) и КТО звонит (ФИО).
-4. УСПОКОЕНИЕ: Если паника — успокой ("Я с вами, помощь едет").
-
-Если информации достаточно (есть адрес и суть), завершай диалог фразой "Наряд выехал".
+# --- Промпт Диспетчера ---
+SYSTEM_PROMPT = """Ты — опытный оператор службы 112 (Казахстан). 
+Твоя цель: успокоить, узнать СУТЬ происшествия и АДРЕС.
+Отвечай кратко (1-2 предложения). Не трать время на вежливость, если ситуация критическая.
+Если пользователь молчит или говорит невнятно, переспроси.
 """
 
-# --- Endpoints ---
+# --- Эндпоинты ---
 
 @app.get("/health")
-async def health():
-    return {"status": "ok", "module": "ai_new_version"}
+def health():
+    return {"status": "ok", "version": "updated_v2"}
 
-# Старые эндпоинты для совместимости (можно оставить)
-@app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...), language: str = "ru"):
-    try:
-        contents = await file.read()
-        text = speech_service.transcribe(contents, language)
-        return {"text": text, "language": language}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/classify")
-async def classify_text(text: str):
-    result = openai_classifier_service.classify(text)
-    return result
-
-# ✅ ГЛАВНЫЙ ЭНДПОИНТ (которого не хватало)
 @app.post("/process-call", response_model=ProcessCallResponse)
 async def process_call(request: ProcessCallRequest):
     try:
         session_id = request.sessionId
-        logger.info(f"[{session_id}] Processing request...")
+        logger.info(f"[{session_id}] 📨 Processing audio chunk...")
 
-        # 1. Decode Audio
+        # 1. Audio -> Text
         try:
             audio_bytes = base64.b64decode(request.audioData)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid base64 audio")
+            user_text = speech_service.transcribe(audio_bytes, "ru")
+        except Exception as e:
+            logger.warning(f"Decoding failed: {e}")
+            return ProcessCallResponse(userText="", responseText="")
 
-        # 2. STT
-        user_text = speech_service.transcribe(audio_bytes, "ru")
-        
-        # Фильтр тишины/мусора
+        # Фильтр тишины
         if not user_text or len(user_text.strip()) < 2:
-            logger.info(f"[{session_id}] Ignored empty speech")
-            return ProcessCallResponse(userText="", responseText="", incident={})
+            return ProcessCallResponse(userText="", responseText="")
 
-        logger.info(f"[{session_id}] User said: {user_text}")
+        logger.info(f"[{session_id}] 🗣️ User: {user_text}")
 
-        # 3. LLM
-        messages = [{"role": "system", "content": DISPATCHER_SYSTEM_PROMPT}]
-        for msg in request.history:
-            if msg.get("role") and msg.get("content"):
-                messages.append({"role": msg["role"], "content": msg["content"]})
+        # 2. Text -> AI Response
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # Добавляем историю (последние 4 сообщения для контекста)
+        messages.extend(request.history[-4:]) 
         messages.append({"role": "user", "content": user_text})
 
-        chat_completion = client.chat.completions.create(
-            model="gpt-4o-mini", messages=messages, max_tokens=150
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini", messages=messages, max_tokens=100
         )
-        response_text = chat_completion.choices[0].message.content
-        logger.info(f"[{session_id}] AI Answer: {response_text}")
+        ai_text = completion.choices[0].message.content
+        logger.info(f"[{session_id}] 🤖 AI: {ai_text}")
 
-        # 4. Incident Extraction
+        # 3. AI -> Incident Data (для ЕРДР)
+        # Классифицируем каждый ответ, чтобы обновлять карточку в реальном времени
         classification = openai_classifier_service.classify(user_text)
         incident_data = {
-            "category": classification.categories[0] if classification.categories else "Unknown",
-            "address": classification.extracted_info.get("address"),
+            "type": classification.categories[0] if classification.categories else "Unknown",
+            "address": classification.extracted_info.get("address", ""),
             "priority": classification.priority,
-            "service_type": classification.service_type,
-            "recommended_action": classification.recommended_action
+            "description": user_text
         }
 
-        # 5. TTS
-        audio_response = tts_service.generate_speech(response_text, "ru")
-        audio_base64 = base64.b64encode(audio_response).decode('utf-8') if audio_response else None
+        # 4. Text -> Audio
+        audio_response = tts_service.generate_speech(ai_text, "ru")
+        audio_b64 = base64.b64encode(audio_response).decode('utf-8') if audio_response else None
 
         return ProcessCallResponse(
             userText=user_text,
-            responseText=response_text,
-            audioBase64=audio_base64,
+            responseText=ai_text,
+            audioBase64=audio_b64,
             incident=incident_data
         )
 
     except Exception as e:
-        logger.error(f"Error in process-call: {e}")
+        logger.error(f"❌ Error in process-call: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
+    # ВАЖНО: reload=True
     uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
