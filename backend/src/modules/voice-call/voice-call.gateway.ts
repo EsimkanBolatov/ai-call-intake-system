@@ -11,6 +11,8 @@ export class VoiceCallGateway implements OnGatewayDisconnect {
   private sessionBuffers: Map<string, Buffer[]> = new Map();
   // Таймеры сброса для каждой сессии
   private flushTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Метаданные аудио
+  private sessionMetadata: Map<string, { sampleRate: number, channels: number }> = new Map();
 
   constructor(private readonly voiceAiService: VoiceAiService) {}
 
@@ -37,13 +39,14 @@ export class VoiceCallGateway implements OnGatewayDisconnect {
   }
 
   @SubscribeMessage('audio-chunk')
-  async handleAudioChunk(@MessageBody() payload: { audioData: string, sessionId: string }, @ConnectedSocket() client: Socket) {
-    const { sessionId, audioData } = payload;
+  async handleAudioChunk(@MessageBody() payload: { audioData: string, sessionId: string, sampleRate?: number, channels?: number }, @ConnectedSocket() client: Socket) {
+    const { sessionId, audioData, sampleRate = 16000, channels = 1 } = payload;
     if (!sessionId) return;
 
     // 1. Инициализация буфера, если нет
     if (!this.sessionBuffers.has(sessionId)) {
         this.sessionBuffers.set(sessionId, []);
+        this.sessionMetadata.set(sessionId, { sampleRate, channels });
     }
 
     // 2. Добавляем данные
@@ -78,12 +81,13 @@ export class VoiceCallGateway implements OnGatewayDisconnect {
 
       // Склеиваем и очищаем СРАЗУ, чтобы новые данные шли в новый пакет
       const fullBuffer = Buffer.concat(buffers);
+      const metadata = this.sessionMetadata.get(sessionId) || { sampleRate: 16000, channels: 1 };
       this.sessionBuffers.set(sessionId, []); 
 
       console.log(`[Gateway] Processing buffer: ${fullBuffer.length} bytes for ${sessionId}`);
 
       try {
-          const result = await this.voiceAiService.processAudio(fullBuffer, sessionId);
+          const result = await this.voiceAiService.processAudio(fullBuffer, sessionId, metadata);
 
           client.emit('ai-response', {
               text: result.text,

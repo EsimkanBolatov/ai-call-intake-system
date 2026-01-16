@@ -13,6 +13,7 @@ from services.speech_to_text import SpeechToTextService
 from services.nlp_classifier import NLPClassifierService
 from services.priority_detector import PriorityDetectorService
 from services.openai_classifier import OpenAIClassifierService, ClassificationResult
+from services.tts_service import TTSService
 
 app = FastAPI(title="AI Call Intake Module", version="1.0.0")
 
@@ -30,6 +31,7 @@ speech_service = SpeechToTextService()
 classifier_service = NLPClassifierService()
 priority_service = PriorityDetectorService()
 openai_classifier_service = OpenAIClassifierService()
+tts_service = TTSService()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,6 +61,21 @@ class EnhancedClassificationResponse(BaseModel):
     summary: str
     recommended_action: str
     recommended_department: str
+
+
+class ProcessCallRequest(BaseModel):
+    sessionId: str
+    audioData: str  # base64 encoded audio
+    sampleRate: int = 16000
+    channels: int = 1
+    history: list[dict] = []  # chat history
+
+
+class ProcessCallResponse(BaseModel):
+    userText: str
+    responseText: str
+    audioBase64: Optional[str] = None
+    incident: dict = {}
 
 
 @app.get("/health")
@@ -132,6 +149,86 @@ async def classify_text(request: ClassifyRequest):
             )
     except Exception as e:
         logger.error(f"Classification error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/process-call")
+async def process_call(request: ProcessCallRequest):
+    """
+    Process a voice call: STT -> LLM -> TTS
+    """
+    try:
+        session_id = request.sessionId
+        audio_data = request.audioData
+        sample_rate = request.sampleRate
+        channels = request.channels
+        history = request.history
+
+        logger.info(f"[{session_id}] Processing call with {len(audio_data)} chars audio data")
+
+        # 1. Decode audio from base64
+        import base64
+        audio_bytes = base64.b64decode(audio_data)
+
+        # 2. STT
+        user_text = speech_service.transcribe(audio_bytes, "ru")
+        if not user_text or len(user_text.strip()) < 2:
+            return ProcessCallResponse(
+                userText="",
+                responseText="",
+                audioBase64=None,
+                incident={}
+            )
+
+        logger.info(f"[{session_id}] STT: {user_text}")
+
+        # 3. LLM Classification
+        if openai_classifier_service.client:
+            classification = openai_classifier_service.classify(user_text)
+            incident_data = {
+                "categories": classification.categories,
+                "priority": classification.priority,
+                "service_type": classification.service_type,
+                "is_false_call": classification.is_false_call,
+                "confidence": classification.confidence,
+                "extracted_info": classification.extracted_info,
+                "summary": classification.summary,
+                "recommended_action": classification.recommended_action,
+                "recommended_department": classification.recommended_department
+            }
+        else:
+            # Fallback
+            category = classifier_service.classify(user_text)
+            priority = priority_service.determine_priority(user_text, category)
+            incident_data = {
+                "categories": [category],
+                "priority": priority,
+                "service_type": "other",
+                "is_false_call": False,
+                "confidence": 0.85,
+                "extracted_info": {},
+                "summary": user_text,
+                "recommended_action": "Обработать звонок",
+                "recommended_department": "Другое"
+            }
+
+        # 4. Generate dispatcher response
+        # For now, use a simple template. In production, use LLM for response generation
+        response_text = f"Ваше сообщение принято. Категория: {incident_data['categories'][0]}. Приоритет: {incident_data['priority']}."
+
+        # 5. TTS
+        audio_response = tts_service.generate_speech(response_text, "ru")
+        audio_base64 = base64.b64encode(audio_response).decode('utf-8') if audio_response else None
+
+        return ProcessCallResponse(
+            userText=user_text,
+            responseText=response_text,
+            audioBase64=audio_base64,
+            incident=incident_data
+        )
+
+    except Exception as e:
+        logger.error(f"Process call error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

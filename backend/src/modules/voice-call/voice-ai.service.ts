@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import OpenAI from 'openai';
+import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CasesService } from '../cases/cases.service';
@@ -18,18 +18,15 @@ export class VoiceAiService { // <--- БЫЛО AiService, СТАЛО VoiceAiServ
   private readonly recordingsDir = path.resolve('./recordings');
   private readonly tempDir = path.resolve('./temp');
   private readonly erdrApiUrl: string;
+  private readonly aiModuleUrl: string;
 
   constructor(
     private configService: ConfigService,
     @Inject(forwardRef(() => CasesService))
     private casesService: CasesService,
   ) {
-    this.openai = new OpenAI({
-      apiKey: this.configService.get<string>('OPENAI_API_KEY'),
-      timeout: 30000,
-    });
-
     this.erdrApiUrl = this.configService.get<string>('ERDR_API_URL') || 'http://127.0.0.1:8000';
+    this.aiModuleUrl = this.configService.get<string>('AI_MODULE_URL') || 'http://127.0.0.1:8001';
 
     // Создаем папки, если их нет
     if (!fs.existsSync(this.recordingsDir)) fs.mkdirSync(this.recordingsDir, { recursive: true });
@@ -42,61 +39,59 @@ export class VoiceAiService { // <--- БЫЛО AiService, СТАЛО VoiceAiServ
 
   /**
    * Основной пайплайн обработки голосового чанка:
-   * Audio Buffer -> STT -> (Analyze + Generate Answer) -> TTS -> Audio Response
+   * Audio Buffer -> Send to AI Module -> Get response
    */
-  async processAudio(audioBuffer: Buffer, sessionId: string) {
+  async processAudio(audioBuffer: Buffer, sessionId: string, metadata: { sampleRate: number, channels: number }) {
     // 1. Сохраняем входящий аудио-фрагмент (для истории/отладки)
     const userFile = path.join(this.recordingsDir, `${sessionId}_user_${Date.now()}.wav`);
     fs.writeFileSync(userFile, audioBuffer);
 
-    // 2. Распознавание речи (STT) - Реальный Whisper
-    const userText = await this.speechToText(audioBuffer, sessionId);
-    
-    // Фильтр тишины или пустых запросов
-    if (!userText || userText.trim().length < 2) {
-       return { text: "", response: "", audio: null, incident: this.incidentData.get(sessionId) };
-    }
-
-    this.logger.log(`[${sessionId}] 📞 User: ${userText}`);
-
-    // Получаем текущий контекст инцидента
-    const currentIncident = this.incidentData.get(sessionId) || {};
-
-    // 3. Параллельный запуск: Анализ данных и Генерация ответа диспетчера
-    let incidentAnalysis = {};
-    let dispatcherResponse = "";
-
+    // 2. Отправляем в AI Module
     try {
-        const [analysisRes, dispatchRes] = await Promise.allSettled([
-            this.analyzeIncidentForErdr(userText),
-            this.generateDispatcherResponse(userText, sessionId, currentIncident)
-        ]);
+      const response = await axios.post(`${this.aiModuleUrl}/process-call`, {
+        sessionId,
+        audioData: audioBuffer.toString('base64'),
+        sampleRate: metadata.sampleRate,
+        channels: metadata.channels,
+        history: this.dispatcherHistory.get(sessionId) || []
+      }, {
+        timeout: 30000
+      });
 
-        if (analysisRes.status === 'fulfilled') incidentAnalysis = analysisRes.value;
-        if (dispatchRes.status === 'fulfilled') dispatcherResponse = dispatchRes.value;
+      const data = response.data;
 
-    } catch (e) {
-        this.logger.error(`[${sessionId}] AI Processing Error`, e);
-    }
+      // 3. Сохраняем историю
+      if (!this.dispatcherHistory.has(sessionId)) {
+        this.dispatcherHistory.set(sessionId, []);
+      }
+      this.dispatcherHistory.get(sessionId).push(
+        { role: 'user', content: data.userText },
+        { role: 'assistant', content: data.responseText }
+      );
 
-    // 4. Объединение данных (Merge CAD Data)
-    const mergedIncident = this.mergeIncidentData(sessionId, incidentAnalysis);
+      // 4. Обновляем incident data
+      if (data.incident) {
+        this.incidentData.set(sessionId, data.incident);
+      }
 
-    // 5. Генерация речи (TTS)
-    let responseAudio: Buffer = null;
-    if (dispatcherResponse) {
-        responseAudio = await this.textToSpeech(dispatcherResponse);
-        // Сохраняем ответ системы
+      // 5. Сохраняем аудио ответ, если есть
+      let responseAudio: Buffer = null;
+      if (data.audioBase64) {
+        responseAudio = Buffer.from(data.audioBase64, 'base64');
         const aiFile = path.join(this.recordingsDir, `${sessionId}_ai_${Date.now()}.mp3`);
         fs.writeFileSync(aiFile, responseAudio);
-    }
+      }
 
-    return {
-      text: userText,
-      response: dispatcherResponse,
-      audio: responseAudio,
-      incident: mergedIncident,
-    };
+      return {
+        text: data.userText,
+        response: data.responseText,
+        audio: responseAudio,
+        incident: data.incident,
+      };
+    } catch (error) {
+      this.logger.error(`[${sessionId}] AI Module request failed: ${error.message}`);
+      return { text: "", response: "Извините, произошла ошибка обработки. Попробуйте еще раз.", audio: null, incident: this.incidentData.get(sessionId) };
+    }
   }
 
   /**

@@ -155,6 +155,32 @@ class TTSService:
             # Fallback to mock TTS
             return self._tts_mock(text, language, output_format)
     
+    def generate_speech(self, text: str, language: str = "ru", 
+                       output_format: str = "wav") -> Optional[bytes]:
+        """
+        Convert text to speech and return audio bytes.
+        
+        Args:
+            text: Text to convert
+            language: Language code (ru, kk, en, etc.)
+            output_format: Output audio format (wav, mp3)
+            
+        Returns:
+            Audio data as bytes or None
+        """
+        file_path = self.text_to_speech(text, language, output_format)
+        if file_path and os.path.exists(file_path):
+            try:
+                with open(file_path, 'rb') as f:
+                    audio_bytes = f.read()
+                # Clean up file
+                os.unlink(file_path)
+                return audio_bytes
+            except Exception as e:
+                logger.error(f"Failed to read TTS audio file: {e}")
+                return None
+        return None
+    
     def _tts_coqui(self, text: str, language: str, output_format: str) -> Optional[str]:
         """Convert text to speech using Coqui TTS."""
         if not self.model:

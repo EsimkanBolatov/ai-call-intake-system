@@ -6,44 +6,53 @@ import { Mic, PhoneDisabled, RecordVoiceOver, SettingsVoice } from "@mui/icons-m
 import { io, Socket } from "socket.io-client";
 
 // Хелперы для WAV
-const audioBufferToWav = (buffer: AudioBuffer) => {
-  const numChannels = 1;
-  const sampleRate = buffer.sampleRate;
-  const format = 1; // PCM
-  const bitDepth = 16;
-  const bytesPerSample = bitDepth / 8;
-  const blockAlign = numChannels * bytesPerSample;
-  const samples = buffer.getChannelData(0);
-  const dataLength = samples.length * bytesPerSample;
-  const bufferLen = 44 + dataLength;
-  const arrayBuffer = new ArrayBuffer(bufferLen);
-  const view = new DataView(arrayBuffer);
+// const audioBufferToWav = (buffer: AudioBuffer) => {
+//   const numChannels = 1;
+//   const sampleRate = buffer.sampleRate;
+//   const format = 1; // PCM
+//   const bitDepth = 16;
+//   const bytesPerSample = bitDepth / 8;
+//   const blockAlign = numChannels * bytesPerSample;
+//   const samples = buffer.getChannelData(0);
+//   const dataLength = samples.length * bytesPerSample;
+//   const bufferLen = 44 + dataLength;
+//   const arrayBuffer = new ArrayBuffer(bufferLen);
+//   const view = new DataView(arrayBuffer);
 
-  const writeString = (view: DataView, offset: number, string: string) => {
-    for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
-  };
+//   const writeString = (view: DataView, offset: number, string: string) => {
+//     for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+//   };
 
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + dataLength, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, format, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitDepth, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, dataLength, true);
+//   writeString(view, 0, 'RIFF');
+//   view.setUint32(4, 36 + dataLength, true);
+//   writeString(view, 8, 'WAVE');
+//   writeString(view, 12, 'fmt ');
+//   view.setUint32(16, 16, true);
+//   view.setUint16(20, format, true);
+//   view.setUint16(22, numChannels, true);
+//   view.setUint32(24, sampleRate, true);
+//   view.setUint32(28, sampleRate * blockAlign, true);
+//   view.setUint16(32, blockAlign, true);
+//   view.setUint16(34, bitDepth, true);
+//   writeString(view, 36, 'data');
+//   view.setUint32(40, dataLength, true);
 
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++) {
-    let s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-    offset += 2;
+//   let offset = 44;
+//   for (let i = 0; i < samples.length; i++) {
+//     let s = Math.max(-1, Math.min(1, samples[i]));
+//     view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+//     offset += 2;
+//   }
+//   return new Blob([arrayBuffer], { type: 'audio/wav' });
+// };
+
+const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
   }
-  return new Blob([arrayBuffer], { type: 'audio/wav' });
+  return btoa(binary);
 };
 
 const blobToBase64 = (blob: Blob): Promise<string> => {
@@ -307,13 +316,9 @@ const CallSimulator: React.FC = () => {
       
       console.log(`[stopRecordingAndSend] Created flat array of length: ${flat.length}`);
       
-      const audioBuffer = audioContextRef.current!.createBuffer(1, flat.length, 16000);
-      audioBuffer.copyToChannel(flat, 0);
-      
-      const wavBlob = audioBufferToWav(audioBuffer);
-      console.log(`[stopRecordingAndSend] Created WAV blob of size: ${wavBlob.size} bytes`);
-      
-      const base64 = await blobToBase64(wavBlob);
+      // Convert Float32Array to ArrayBuffer for base64
+      const buffer = flat.buffer.slice(flat.byteOffset, flat.byteOffset + flat.byteLength);
+      const base64 = arrayBufferToBase64(buffer);
       console.log(`[stopRecordingAndSend] Converted to base64, length: ${base64.length}`);
 
       // FIXED: Use the correct sessionIdRef
@@ -321,7 +326,9 @@ const CallSimulator: React.FC = () => {
         console.log(`[stopRecordingAndSend] Sending audio-chunk to session ${sessionIdRef.current}`);
         socketRef.current.emit("audio-chunk", {
             sessionId: sessionIdRef.current, 
-            audioData: base64
+            audioData: base64,
+            sampleRate: 16000,
+            channels: 1
         });
       } else {
           console.warn("Session ID or Socket missing");
