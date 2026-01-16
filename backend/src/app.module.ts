@@ -8,6 +8,7 @@ import { UsersModule } from "./modules/users/users.module";
 import { CasesModule } from "./modules/cases/cases.module";
 import { TelegramModule } from "./modules/telegram/telegram.module";
 import { VoiceCallModule } from "./modules/voice-call/voice-call.module"; // Импорт есть
+import { AiModule } from "./modules/ai/ai.module";
 
 @Module({
   imports: [
@@ -25,7 +26,8 @@ import { VoiceCallModule } from "./modules/voice-call/voice-call.module"; // И�
     UsersModule,
     CasesModule,
     TelegramModule,
-    VoiceCallModule, // <--- ВАЖНО: Добавьте модуль сюда!
+    VoiceCallModule, 
+    AiModule,
   ],
   controllers: [HealthController],
 })
