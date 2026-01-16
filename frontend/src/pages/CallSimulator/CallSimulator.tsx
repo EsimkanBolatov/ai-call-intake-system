@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Box, Typography, Paper, Button, Stack, Card, CardContent, Chip
+  Box, Typography, Paper, Button, Stack, Card, CardContent, Chip, LinearProgress
 } from "@mui/material";
 import { Mic, PhoneDisabled, RecordVoiceOver, SettingsVoice } from "@mui/icons-material";
 import { io, Socket } from "socket.io-client";
 
+// Вспомогательная функция
 const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
   let binary = '';
   const bytes = new Uint8Array(buffer);
@@ -22,11 +23,12 @@ const CallSimulator: React.FC = () => {
   const [transcript, setTranscript] = useState<{role: string, text: string}[]>([]);
   const [incidentData, setIncidentData] = useState<any>(null);
   const [volume, setVolume] = useState(0);
+  const [thresholdDisplay, setThresholdDisplay] = useState(0);
   const [calibrating, setCalibrating] = useState(false);
 
-  // Refs for Audio/Socket logic
+  // Refs
   const socketRef = useRef<Socket | null>(null);
-  const sessionIdRef = useRef<string | null>(null); // <--- FIXED: Use Ref for SessionID
+  const sessionIdRef = useRef<string | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -36,12 +38,12 @@ const CallSimulator: React.FC = () => {
   // VAD Refs
   const analyserRef = useRef<AnalyserNode | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const maxDurationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // NEW: Таймер макс. длительности
   const isSpeakingRef = useRef(false);
-  const noiseLevelRef = useRef(0);
+  const noiseLevelRef = useRef(10); // Default safety threshold
   const calibrationSamplesRef = useRef<number[]>([]);
 
   useEffect(() => {
-    // Инициализация сокета (URL бэкенда)
     socketRef.current = io("http://localhost:3000", { 
         transports: ["websocket"],
         path: "/socket.io/"
@@ -49,7 +51,6 @@ const CallSimulator: React.FC = () => {
 
     socketRef.current.on("connect", () => console.log("Socket connected"));
     
-    // FIXED: Capture session ID from backend
     socketRef.current.on("ai-call-started", (data: { sessionId: string }) => {
         console.log("Call Started, Session ID:", data.sessionId);
         sessionIdRef.current = data.sessionId; 
@@ -61,7 +62,6 @@ const CallSimulator: React.FC = () => {
     socketRef.current.on("ai-response", (data) => {
         setStatus("🤖 AI отвечает...");
         
-        // Добавляем в чат
         setTranscript(prev => [
             ...prev, 
             { role: 'user', text: data.text },
@@ -70,7 +70,6 @@ const CallSimulator: React.FC = () => {
 
         if (data.incident) setIncidentData(data.incident);
 
-        // Воспроизведение аудио
         if (data.audio) {
             const audioSrc = `data:audio/mp3;base64,${data.audio}`;
             if (aiAudioRef.current) {
@@ -78,8 +77,11 @@ const CallSimulator: React.FC = () => {
                 aiAudioRef.current.play();
                 aiAudioRef.current.onended = () => {
                    setStatus("🎙️ Слушаю...");
+                   // После ответа AI можно немного поднять порог временно, чтобы не ловить эхо
                 };
             }
+        } else {
+            setStatus("🎙️ Слушаю...");
         }
     });
 
@@ -92,7 +94,7 @@ const CallSimulator: React.FC = () => {
   const calibrateNoiseLevel = () => {
     return new Promise<void>((resolve) => {
       setCalibrating(true);
-      setStatus("Калибровка уровня шума...");
+      setStatus("🤫 ТИШИНА! Калибровка шума...");
       calibrationSamplesRef.current = [];
       
       const calibrate = () => {
@@ -108,14 +110,21 @@ const CallSimulator: React.FC = () => {
             sum += val * val;
         }
         const rms = Math.sqrt(sum / bufferLength);
-        const volume = rms * 100;
+        const currentVol = rms * 100;
         
-        calibrationSamplesRef.current.push(volume);
+        calibrationSamplesRef.current.push(currentVol);
+        setVolume(currentVol); // Visual feedback
         
-        if (calibrationSamplesRef.current.length >= 60) { // ~2 seconds at 30fps
+        if (calibrationSamplesRef.current.length >= 60) { // ~1 sec
           const avgNoise = calibrationSamplesRef.current.reduce((a, b) => a + b) / calibrationSamplesRef.current.length;
-          noiseLevelRef.current = avgNoise + 5; // Moderate buffer for noise rejection
-          console.log(`[calibrateNoiseLevel] Calibrated noise level: ${avgNoise}, threshold: ${noiseLevelRef.current}`);
+          
+          // ИЗМЕНЕНИЕ: Жесткий минимум 10. Если шум 0.5, порог будет 10. Если шум 8, порог 13.
+          const calculatedThreshold = Math.max(avgNoise + 5, 10);
+          
+          noiseLevelRef.current = calculatedThreshold;
+          setThresholdDisplay(calculatedThreshold);
+          
+          console.log(`[Calibration] Avg Noise: ${avgNoise.toFixed(2)}, Set Threshold: ${calculatedThreshold}`);
           setCalibrating(false);
           setStatus("🎙️ Слушаю...");
           resolve();
@@ -133,7 +142,6 @@ const CallSimulator: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-      // Отправка события начала звонка с DeviceInfo
       const deviceInfo = {
         userAgent: navigator.userAgent,
         timestamp: new Date().toISOString()
@@ -149,35 +157,28 @@ const CallSimulator: React.FC = () => {
   const startListening = async () => {
       if (!mediaStreamRef.current) return;
 
-      console.log("[startListening] Starting audio processing...");
-
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioContextClass({ sampleRate: 16000 });
       audioContextRef.current = ctx;
 
       try {
-        console.log("[startListening] Loading audio-processor.js...");
         await ctx.audioWorklet.addModule('/audio-processor.js'); 
-        console.log("[startListening] AudioWorklet module loaded successfully");
       } catch (e) {
-        console.error("Failed to load audio-processor.js. Ensure it exists in /public folder.", e);
-        setStatus("❌ Ошибка: audio-processor не найден");
+        console.error("Failed to load audio-processor.js", e);
         return;
       }
       
       const source = ctx.createMediaStreamSource(mediaStreamRef.current);
       const analyser = ctx.createAnalyser();
-      analyser.fftSize = 1024;
+      analyser.fftSize = 1024; // 512 bins
+      analyser.smoothingTimeConstant = 0.3;
       analyserRef.current = analyser;
 
-      console.log("[startListening] Creating AudioWorkletNode...");
       const processor = new AudioWorkletNode(ctx, 'audio-recorder-processor');
       processorRef.current = processor;
-      console.log("[startListening] AudioWorkletNode created");
 
       processor.port.onmessage = (e) => {
           if (e.data.type === 'audioChunk' && isSpeakingRef.current) {
-              console.log(`[startListening] Received audio chunk of length: ${e.data.chunk.length}`);
               audioChunksRef.current.push(e.data.chunk);
           }
       };
@@ -186,13 +187,11 @@ const CallSimulator: React.FC = () => {
       source.connect(processor);
       processor.connect(ctx.destination); 
 
-      console.log("[startListening] Audio graph connected, starting noise calibration");
       await calibrateNoiseLevel();
       detectVoiceActivity();
   };
 
   const detectVoiceActivity = () => {
-      // Check if call is still active
       if (!analyserRef.current || !mediaStreamRef.current?.active) return;
 
       const bufferLength = analyserRef.current.fftSize;
@@ -201,37 +200,43 @@ const CallSimulator: React.FC = () => {
 
       let sum = 0;
       for (let i = 0; i < bufferLength; i++) {
-          const val = (dataArray[i] - 128) / 128; // normalize to -1 to 1
+          const val = (dataArray[i] - 128) / 128; 
           sum += val * val;
       }
       const rms = Math.sqrt(sum / bufferLength);
-      const volume = rms * 100; // scale to 0-100
-      setVolume(volume);
+      const currentVol = rms * 100; 
+      setVolume(currentVol);
 
-      console.log(`[detectVoiceActivity] volume: ${volume}, noiseLevel: ${noiseLevelRef.current}, isSpeaking: ${isSpeakingRef.current}`);
+      const THRESHOLD = noiseLevelRef.current;
 
-      const THRESHOLD = noiseLevelRef.current || 5; // Use calibrated noise level or fallback
-
-      if (volume > THRESHOLD) {
+      if (currentVol > THRESHOLD) {
           if (!isSpeakingRef.current) {
-              console.log("🗣️ Speech started");
+              console.log("🗣️ Speech started (Vol: " + currentVol.toFixed(1) + ")");
               isSpeakingRef.current = true;
               setIsRecording(true);
               audioChunksRef.current = [];
-              console.log("[detectVoiceActivity] Clearing audioChunksRef and starting recording");
               processorRef.current?.port.postMessage({ type: 'startRecording' });
               
               if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
+              // ИЗМЕНЕНИЕ: Предохранитель. Если говорим > 7 сек, останавливаем принудительно.
+              if (maxDurationTimerRef.current) clearTimeout(maxDurationTimerRef.current);
+              maxDurationTimerRef.current = setTimeout(() => {
+                  console.log("⚠️ Max duration reached (7s), forcing send...");
+                  stopRecordingAndSend();
+              }, 7000);
           }
+          // Сбрасываем таймер тишины, пока говорим
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
           
       } else {
+          // Если мы говорили, а теперь тишина
           if (isSpeakingRef.current && !silenceTimerRef.current) {
-              console.log("🤫 Silence detected, setting timer...");
+              // Ждем 800мс тишины
               silenceTimerRef.current = setTimeout(() => {
                   console.log("🤫 Silence detected, sending...");
                   stopRecordingAndSend();
-              }, 1200); // Increased silence wait slightly
+              }, 800); 
           }
       }
 
@@ -239,21 +244,15 @@ const CallSimulator: React.FC = () => {
   };
 
   const stopRecordingAndSend = async () => {
+      // Очистка таймеров
+      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+      if (maxDurationTimerRef.current) { clearTimeout(maxDurationTimerRef.current); maxDurationTimerRef.current = null; }
+      
       isSpeakingRef.current = false;
       setIsRecording(false);
       processorRef.current?.port.postMessage({ type: 'stopRecording' });
-      
-      // Clear silence timer ref so it can trigger again next time
-      silenceTimerRef.current = null;
 
-      console.log(`[stopRecordingAndSend] audioChunksRef.current.length: ${audioChunksRef.current.length}`);
-
-      if (audioChunksRef.current.length === 0) {
-          console.log("[stopRecordingAndSend] No audio chunks to send");
-          return;
-      }
-
-      console.log(`Sending ${audioChunksRef.current.length} chunks...`);
+      if (audioChunksRef.current.length === 0) return;
 
       const flat = new Float32Array(audioChunksRef.current.reduce((acc, val) => acc + val.length, 0));
       let offset = 0;
@@ -262,24 +261,26 @@ const CallSimulator: React.FC = () => {
           offset += chunk.length;
       }
       
-      console.log(`[stopRecordingAndSend] Created flat array of length: ${flat.length}`);
-      
-      // Convert Float32Array to ArrayBuffer for base64
+      // Игнорируем очень короткие "всплески" (меньше 0.3 сек)
+      if (flat.length < 16000 * 0.3) {
+          console.log("Ignored short noise (<0.3s)");
+          audioChunksRef.current = [];
+          return;
+      }
+
       const buffer = flat.buffer.slice(flat.byteOffset, flat.byteOffset + flat.byteLength);
       const base64 = arrayBufferToBase64(buffer);
-      console.log(`[stopRecordingAndSend] Converted to base64, length: ${base64.length}`);
 
-      // FIXED: Use the correct sessionIdRef
       if (sessionIdRef.current && socketRef.current) {
-        console.log(`[stopRecordingAndSend] Sending audio-chunk to session ${sessionIdRef.current}`);
+        console.log(`Sending audio chunk (${base64.length} bytes)...`);
         socketRef.current.emit("audio-chunk", {
             sessionId: sessionIdRef.current, 
             audioData: base64,
             sampleRate: 16000,
-            channels: 1
+            channels: 1,
+            isFinal: true
         });
-      } else {
-          console.warn("Session ID or Socket missing");
+        setStatus("⏳ Обработка...");
       }
       
       audioChunksRef.current = [];
@@ -289,11 +290,9 @@ const CallSimulator: React.FC = () => {
       audioContextRef.current?.close();
       mediaStreamRef.current?.getTracks().forEach(t => t.stop());
       setIsCalling(false);
-      // Don't clear transcript to allow user to read it
-      // setTranscript([]); 
-      // setIncidentData(null);
       isSpeakingRef.current = false;
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (maxDurationTimerRef.current) clearTimeout(maxDurationTimerRef.current);
   };
 
   const handleEndCall = () => {
@@ -311,20 +310,35 @@ const CallSimulator: React.FC = () => {
       
       <Paper sx={{ p: 3, mb: 3, textAlign: 'center', background: isCalling ? '#e3f2fd' : '#fff' }}>
         <Typography variant="h6" sx={{ mb: 2, color: calibrating ? '#ff9800' : 'inherit' }}>
-          {calibrating ? '🎛️ Калибровка уровня шума...' : status}
+          {status}
         </Typography>
+        
+        {/* Индикатор громкости */}
+        <Box sx={{ width: '80%', margin: '0 auto 20px' }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                <Typography variant="caption">Mic Level: {volume.toFixed(1)}</Typography>
+                <Typography variant="caption" color="error">Threshold: {thresholdDisplay.toFixed(1)}</Typography>
+            </Box>
+            <LinearProgress 
+                variant="determinate" 
+                value={Math.min(volume * 2, 100)} 
+                color={isRecording ? "error" : volume > thresholdDisplay ? "warning" : "primary"}
+                sx={{ height: 10, borderRadius: 5 }}
+            />
+        </Box>
+
         <Box sx={{ position: 'relative', display: 'inline-block', mb: 2 }}>
             <div style={{
                 width: 100, height: 100, borderRadius: '50%',
                 background: isRecording ? '#ef5350' : '#2196f3',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: `0 0 ${volume * 2}px ${isRecording ? 'red' : 'blue'}` // Increased visual feedback
+                transition: '0.1s',
+                transform: `scale(${1 + Math.min(volume/50, 0.3)})`,
+                boxShadow: `0 0 ${volume * 2}px ${isRecording ? 'red' : '#2196f333'}` 
             }}>
                 {isRecording ? <RecordVoiceOver style={{ fontSize: 50, color: 'white' }} /> : <Mic style={{ fontSize: 50, color: 'white' }} />}
             </div>
         </Box>
-        
-        <Typography variant="h6" gutterBottom>{status}</Typography>
 
         <Stack direction="row" spacing={2} justifyContent="center" mt={2}>
             {!isCalling ? (
@@ -339,7 +353,6 @@ const CallSimulator: React.FC = () => {
         </Stack>
       </Paper>
 
-      {/* Transcript Area */}
       <Paper sx={{ p: 2, height: 300, overflowY: 'auto', mb: 3, bgcolor: '#f5f5f5' }}>
           {transcript.length === 0 && <Typography color="text.secondary" align="center">История пуста...</Typography>}
           {transcript.map((msg, i) => (
@@ -360,22 +373,19 @@ const CallSimulator: React.FC = () => {
           ))}
       </Paper>
 
-      {/* Incident Data Card */}
       {incidentData && (
           <Card variant="outlined">
               <CardContent>
-                  <Typography variant="h6" gutterBottom>📋 Данные ЕРДР (Live)</Typography>
-                  <Stack direction="row" spacing={1} mb={1}>
+                  <Typography variant="h6">📋 Данные (Live)</Typography>
+                  <Stack direction="row" spacing={1} my={1}>
                       <Chip label={incidentData.priority?.toUpperCase()} color={incidentData.priority === 'critical' ? 'error' : 'warning'} />
-                      <Chip label={incidentData.categoryRu} />
+                      <Chip label={incidentData.category} />
                   </Stack>
-                  <Typography><b>Район:</b> {incidentData.erdr_district}</Typography>
-                  <Typography><b>Служба:</b> {incidentData.dispatchToRu}</Typography>
+                  <Typography><b>Адрес:</b> {incidentData.address}</Typography>
               </CardContent>
           </Card>
       )}
 
-      {/* Hidden Audio Player */}
       <audio ref={aiAudioRef} style={{ display: 'none' }} />
     </Box>
   );
