@@ -28,6 +28,8 @@ export class VoiceAiService {
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('OPENAI_API_KEY'),
+      timeout: 30 * 1000,
+      maxRetries: 2,
     });
     this.erdrApiUrl = this.configService.get<string>('ERDR_API_URL') || 'http://127.0.0.1:8000';
 
