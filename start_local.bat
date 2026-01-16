@@ -49,7 +49,7 @@ if not exist venv (
 cd "%PROJECT_ROOT%"
 
 echo 5. Запуск AI-модуля...
-start "AI Module" cmd /k "cd /d "%PROJECT_ROOT%ai-module" && venv\Scripts\activate && uvicorn main:app --host 0.0.0.0 --port 8001"
+start "AI Module" cmd /k ""%PROJECT_ROOT%ai-module\venv\Scripts\python.exe" -m uvicorn main:app --host 0.0.0.0 --port 8001"
 
 timeout /t 5 /nobreak >nul
 
