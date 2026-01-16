@@ -23,16 +23,18 @@ class STTEngine(Enum):
 class STTService:
     """Main STT service class."""
     
-    def __init__(self, engine: str = None, model_size: str = "base"):
+    def __init__(self, engine: str = None, model_size: str = "base", language: str = "kk"):
         """
         Initialize STT service.
         
         Args:
             engine: STT engine to use (whisper, google, azure, mock)
             model_size: For Whisper, model size (tiny, base, small, medium, large)
+            language: Default language for transcription
         """
         self.engine = engine or os.getenv('STT_ENGINE', 'whisper').lower()
         self.model_size = model_size
+        self.language = language
         self.model = None
         self.client = None
         

@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
         classifier = IncidentClassifier()
         
         call_logger = CallLogger(
-            db_url=os.getenv("DATABASE_URL", "sqlite:///calls.db")
+            db_path=os.getenv("DATABASE_URL", "calls.db")
         )
         
         logger.info("Сервисы успешно инициализированы")

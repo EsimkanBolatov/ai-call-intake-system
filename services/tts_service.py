@@ -24,16 +24,18 @@ class TTSEngine(Enum):
 class TTSService:
     """Main TTS service class."""
     
-    def __init__(self, engine: str = None, voice: str = None):
+    def __init__(self, engine: str = None, voice: str = None, language: str = None):
         """
         Initialize TTS service.
         
         Args:
             engine: TTS engine to use (coqui, openai, google, mock)
             voice: Voice name or ID
+            language: Language for TTS
         """
-        self.engine = engine or os.getenv('TTS_ENGINE', 'coqui').lower()
+        self.engine = 'mock'  # Force mock for now
         self.voice = voice or os.getenv('TTS_VOICE', 'tts_models/multilingual/multi-dataset/xtts_v2')
+        self.language = language or os.getenv('DEFAULT_LANGUAGE', 'kk')
         self.model = None
         self.client = None
         self.output_dir = Path(os.getenv('TTS_OUTPUT_DIR', '/tmp/tts_output'))

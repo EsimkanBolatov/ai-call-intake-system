@@ -24,18 +24,19 @@ class LLMEngine(Enum):
 class LLMService:
     """Main LLM service class for incident analysis."""
     
-    def __init__(self, engine: str = None, model: str = None):
+    def __init__(self, engine: str = None, model: str = None, api_key: str = None):
         """
         Initialize LLM service.
         
         Args:
             engine: LLM engine to use (openai, deepseek, ollama, mock)
             model: Model name (gpt-4, gpt-3.5-turbo, deepseek-chat, etc.)
+            api_key: API key for the LLM service
         """
         self.engine = engine or os.getenv('LLM_ENGINE', 'openai').lower()
         self.model = model or os.getenv('LLM_MODEL', 'gpt-3.5-turbo')
         self.client = None
-        self.api_key = None
+        self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         
         logger.info(f"Initializing LLM service with engine: {self.engine}, model: {self.model}")
         
