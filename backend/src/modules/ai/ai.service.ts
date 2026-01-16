@@ -1,11 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class AiService {
   private openai: OpenAI;
   private logger = new Logger(AiService.name);
+  private readonly tempDir = path.resolve('./temp');
   
   // Хранилище контекста диалогов (в памяти, как в прототипе)
   private dispatcherHistory: Map<string, any[]> = new Map();
@@ -15,6 +18,11 @@ export class AiService {
       apiKey: this.configService.get<string>('OPENAI_API_KEY'),
       timeout: 30000,
     });
+
+    // Создаем временную папку, если её нет
+    if (!fs.existsSync(this.tempDir)) {
+      fs.mkdirSync(this.tempDir, { recursive: true });
+    }
   }
 
   /**
@@ -143,9 +151,63 @@ export class AiService {
   clearSession(sessionId: string) {
       this.dispatcherHistory.delete(sessionId);
   }
-  
-  // Методы TTS/STT остаются или импортируются из VoiceAiService, 
-  // но для чистоты AI логики они могут быть здесь, если VoiceAiService их делегирует.
-  // (В вашем текущем коде они, вероятно, реализованы в VoiceAiService или через REST API, 
-  //  как в CasesService. Здесь мы фокусируемся на AI Persona).
+
+  /**
+   * Классификация текста (для веб-симулятора)
+   */
+  async classifyText(text: string) {
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `Ты диспетчер. Проанализируй текст и верни JSON:
+            {
+              "categories": ["категория"],
+              "priority": "high/medium/low",
+              "serviceType": "police/fire/ambulance/emergency/other",
+              "emotion": "спокойный/паника/агрессия",
+              "keywords": ["слова"]
+            }`
+          },
+          { role: "user", content: text }
+        ],
+        response_format: { type: "json_object" }
+      });
+      return JSON.parse(completion.choices[0].message.content);
+    } catch (e) {
+      this.logger.error("Classify Text Error", e);
+      return { categories: ["error"], priority: "low", serviceType: "other" };
+    }
+  }
+
+  /**
+   * Транскрипция аудиофайла (для REST API)
+   */
+  async transcribeAudio(file: Express.Multer.File) {
+    const tempPath = path.join(this.tempDir, `rest_upload_${Date.now()}_${file.originalname}`);
+    try {
+        fs.writeFileSync(tempPath, file.buffer);
+        
+        const transcription = await this.openai.audio.transcriptions.create({
+            file: fs.createReadStream(tempPath),
+            model: "whisper-1",
+            language: "ru",
+        });
+        
+        return { text: transcription.text };
+    } catch (error) {
+        this.logger.error("REST Transcribe Error", error);
+        throw new Error("Ошибка транскрипции");
+    } finally {
+        if (fs.existsSync(tempPath)) {
+            try {
+                fs.unlinkSync(tempPath);
+            } catch (e) {
+                this.logger.warn(`Could not delete temp file: ${tempPath}`);
+            }
+        }
+    }
+  }
 }
