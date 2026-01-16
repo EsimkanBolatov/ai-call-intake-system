@@ -25,12 +25,17 @@ import {
   Security,
   Notifications,
   EditNote,
+  Mic, // Добавлена иконка микрофона
 } from "@mui/icons-material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { casesApi, aiApi } from "../../services/api";
 import { useNavigate } from "react-router-dom";
+import ActiveCallModal from '../../components/VoiceCall/ActiveCallModal'; // Импорт компонента
 
 const CallSimulator: React.FC = () => {
+  // Состояние для управления модальным окном звонка
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+
   const [callText, setCallText] = useState<string>("");
   const [phoneNumber, setPhoneNumber] = useState<string>("+77071234567");
   const [analysisResult, setAnalysisResult] = useState<{
@@ -240,7 +245,7 @@ const CallSimulator: React.FC = () => {
       </Typography>
       <Typography variant="body1" color="text.secondary" paragraph>
         Имитация входящего звонка в службу 112. Введите текст обращения для
-        анализа. Система автоматически определит категорию, приоритет и службу.
+        анализа или воспользуйтесь голосовым режимом.
       </Typography>
 
       <Box
@@ -296,7 +301,7 @@ const CallSimulator: React.FC = () => {
                   />
                 ))}
               </Stack>
-              <Stack direction="row" spacing={2}>
+              <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap', gap: 1 }}>
                 <Button
                   variant="contained"
                   startIcon={<Send />}
@@ -309,6 +314,17 @@ const CallSimulator: React.FC = () => {
                     "Анализировать"
                   )}
                 </Button>
+                
+                {/* Новая кнопка для голосового вызова */}
+                <Button
+                  variant="contained"
+                  color="secondary"
+                  startIcon={<Mic />}
+                  onClick={() => setIsVoiceModalOpen(true)}
+                >
+                  Голосовой вызов (Demo)
+                </Button>
+
                 <Button
                   variant="outlined"
                   startIcon={<Refresh />}
@@ -537,6 +553,12 @@ const CallSimulator: React.FC = () => {
           {callNotification.message}
         </Alert>
       </Snackbar>
+
+      {/* Модальное окно активного звонка */}
+      <ActiveCallModal
+        open={isVoiceModalOpen}
+        onClose={() => setIsVoiceModalOpen(false)}
+      />
     </Box>
   );
 };

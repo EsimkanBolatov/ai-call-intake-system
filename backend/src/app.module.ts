@@ -7,6 +7,7 @@ import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { CasesModule } from "./modules/cases/cases.module";
 import { TelegramModule } from "./modules/telegram/telegram.module";
+import { VoiceCallModule } from "./modules/voice-call/voice-call.module";
 
 @Module({
   imports: [
