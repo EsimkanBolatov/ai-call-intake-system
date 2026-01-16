@@ -355,7 +355,7 @@ export class CasesService {
     const caseData = await this.findOne(caseId);
     if (!caseData) throw new Error("Case not found");
 
-    const ERDR_API_URL = "http://127.0.0.1:8000"; // Python сервис
+    const ERDR_API_URL = "http://127.0.0.1:8001"; // Python сервис
     this.logger.log(`[ERDR] Sending case ${caseId} to ${ERDR_API_URL}...`);
 
     let audioFilename = null;
