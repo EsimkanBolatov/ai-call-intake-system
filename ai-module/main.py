@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 load_dotenv()
 
-# Импорт сервисов (убедитесь, что эти файлы существуют в папке services)
+# Импорт сервисов
 from services.speech_to_text import SpeechToTextService
 from services.openai_classifier import OpenAIClassifierService
 from services.tts_service import TTSService
@@ -35,7 +35,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Инициализация сервисов
-logger.info("Initializing services (New Version)...") # <--- ЭТА СТРОКА ДОКАЖЕТ, ЧТО КОД ОБНОВИЛСЯ
+logger.info("Initializing services (Updated Version)...")
 try:
     speech_service = SpeechToTextService()
     openai_classifier_service = OpenAIClassifierService()
@@ -79,6 +79,22 @@ DISPATCHER_SYSTEM_PROMPT = """Ты — диспетчер экстренных �
 async def health():
     return {"status": "ok", "module": "ai_new_version"}
 
+# Старые эндпоинты для совместимости (можно оставить)
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...), language: str = "ru"):
+    try:
+        contents = await file.read()
+        text = speech_service.transcribe(contents, language)
+        return {"text": text, "language": language}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/classify")
+async def classify_text(text: str):
+    result = openai_classifier_service.classify(text)
+    return result
+
+# ✅ ГЛАВНЫЙ ЭНДПОИНТ (которого не хватало)
 @app.post("/process-call", response_model=ProcessCallResponse)
 async def process_call(request: ProcessCallRequest):
     try:
@@ -86,14 +102,20 @@ async def process_call(request: ProcessCallRequest):
         logger.info(f"[{session_id}] Processing request...")
 
         # 1. Decode Audio
-        audio_bytes = base64.b64decode(request.audioData)
+        try:
+            audio_bytes = base64.b64decode(request.audioData)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid base64 audio")
 
         # 2. STT
         user_text = speech_service.transcribe(audio_bytes, "ru")
+        
+        # Фильтр тишины/мусора
         if not user_text or len(user_text.strip()) < 2:
+            logger.info(f"[{session_id}] Ignored empty speech")
             return ProcessCallResponse(userText="", responseText="", incident={})
 
-        logger.info(f"[{session_id}] User: {user_text}")
+        logger.info(f"[{session_id}] User said: {user_text}")
 
         # 3. LLM
         messages = [{"role": "system", "content": DISPATCHER_SYSTEM_PROMPT}]
@@ -106,14 +128,16 @@ async def process_call(request: ProcessCallRequest):
             model="gpt-4o-mini", messages=messages, max_tokens=150
         )
         response_text = chat_completion.choices[0].message.content
-        logger.info(f"[{session_id}] AI: {response_text}")
+        logger.info(f"[{session_id}] AI Answer: {response_text}")
 
         # 4. Incident Extraction
         classification = openai_classifier_service.classify(user_text)
         incident_data = {
             "category": classification.categories[0] if classification.categories else "Unknown",
             "address": classification.extracted_info.get("address"),
-            "priority": classification.priority
+            "priority": classification.priority,
+            "service_type": classification.service_type,
+            "recommended_action": classification.recommended_action
         }
 
         # 5. TTS
@@ -128,9 +152,8 @@ async def process_call(request: ProcessCallRequest):
         )
 
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error in process-call: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    # Включаем reload=True для автоматического обновления
     uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
