@@ -68,6 +68,7 @@ const CallSimulator: React.FC = () => {
 
   // Refs for Audio/Socket logic
   const socketRef = useRef<Socket | null>(null);
+  const sessionIdRef = useRef<string | null>(null); // <--- FIXED: Use Ref for SessionID
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -76,7 +77,6 @@ const CallSimulator: React.FC = () => {
   
   // VAD Refs
   const analyserRef = useRef<AnalyserNode | null>(null);
-  // ИСПРАВЛЕНИЕ 1: Используем универсальный тип для таймера
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSpeakingRef = useRef(false);
 
@@ -89,8 +89,10 @@ const CallSimulator: React.FC = () => {
 
     socketRef.current.on("connect", () => console.log("Socket connected"));
     
-    // ИСПРАВЛЕНИЕ 2: Убрали неиспользуемую переменную sessionId
-    socketRef.current.on("ai-call-started", () => {
+    // FIXED: Capture session ID from backend
+    socketRef.current.on("ai-call-started", (data: { sessionId: string }) => {
+        console.log("Call Started, Session ID:", data.sessionId);
+        sessionIdRef.current = data.sessionId; 
         setStatus("🟢 Соединение установлено. Говорите...");
         setIsCalling(true);
         startListening();
@@ -155,7 +157,13 @@ const CallSimulator: React.FC = () => {
       const ctx = new AudioContextClass({ sampleRate: 16000 });
       audioContextRef.current = ctx;
 
-      await ctx.audioWorklet.addModule('/audio-processor.js'); 
+      try {
+        await ctx.audioWorklet.addModule('/audio-processor.js'); 
+      } catch (e) {
+        console.error("Failed to load audio-processor.js. Ensure it exists in /public folder.", e);
+        setStatus("❌ Ошибка: audio-processor не найден");
+        return;
+      }
       
       const source = ctx.createMediaStreamSource(mediaStreamRef.current);
       const analyser = ctx.createAnalyser();
@@ -179,7 +187,8 @@ const CallSimulator: React.FC = () => {
   };
 
   const detectVoiceActivity = () => {
-      if (!analyserRef.current || !isCalling) return;
+      // Check if call is still active
+      if (!analyserRef.current || !mediaStreamRef.current?.active) return;
 
       const bufferLength = analyserRef.current.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
@@ -190,7 +199,7 @@ const CallSimulator: React.FC = () => {
       const avg = sum / bufferLength;
       setVolume(avg);
 
-      const THRESHOLD = 20;
+      const THRESHOLD = 15; // Decreased threshold slightly for better sensitivity
 
       if (avg > THRESHOLD) {
           if (!isSpeakingRef.current) {
@@ -209,7 +218,7 @@ const CallSimulator: React.FC = () => {
               silenceTimerRef.current = setTimeout(() => {
                   console.log("🤫 Silence detected, sending...");
                   stopRecordingAndSend();
-              }, 1000);
+              }, 1200); // Increased silence wait slightly
           }
       }
 
@@ -220,8 +229,13 @@ const CallSimulator: React.FC = () => {
       isSpeakingRef.current = false;
       setIsRecording(false);
       processorRef.current?.port.postMessage({ type: 'stopRecording' });
+      
+      // Clear silence timer ref so it can trigger again next time
+      silenceTimerRef.current = null;
 
       if (audioChunksRef.current.length === 0) return;
+
+      console.log(`Sending ${audioChunksRef.current.length} chunks...`);
 
       const flat = new Float32Array(audioChunksRef.current.reduce((acc, val) => acc + val.length, 0));
       let offset = 0;
@@ -236,10 +250,15 @@ const CallSimulator: React.FC = () => {
       const wavBlob = audioBufferToWav(audioBuffer);
       const base64 = await blobToBase64(wavBlob);
 
-      socketRef.current?.emit("audio-chunk", {
-          sessionId: "active-session", 
-          audioData: base64
-      });
+      // FIXED: Use the correct sessionIdRef
+      if (sessionIdRef.current && socketRef.current) {
+        socketRef.current.emit("audio-chunk", {
+            sessionId: sessionIdRef.current, 
+            audioData: base64
+        });
+      } else {
+          console.warn("Session ID or Socket missing");
+      }
       
       audioChunksRef.current = [];
   };
@@ -248,14 +267,20 @@ const CallSimulator: React.FC = () => {
       audioContextRef.current?.close();
       mediaStreamRef.current?.getTracks().forEach(t => t.stop());
       setIsCalling(false);
-      setTranscript([]);
-      setIncidentData(null);
+      // Don't clear transcript to allow user to read it
+      // setTranscript([]); 
+      // setIncidentData(null);
+      isSpeakingRef.current = false;
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
   };
 
   const handleEndCall = () => {
-      socketRef.current?.emit("end-ai-call", { sessionId: "active-session" }); 
+      if (sessionIdRef.current && socketRef.current) {
+        socketRef.current.emit("end-ai-call", { sessionId: sessionIdRef.current }); 
+      }
       stopAudio();
       setStatus("Звонок завершен");
+      sessionIdRef.current = null;
   };
 
   return (
@@ -268,7 +293,7 @@ const CallSimulator: React.FC = () => {
                 width: 100, height: 100, borderRadius: '50%',
                 background: isRecording ? '#ef5350' : '#2196f3',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: `0 0 ${volume}px ${isRecording ? 'red' : 'blue'}`
+                boxShadow: `0 0 ${volume * 2}px ${isRecording ? 'red' : 'blue'}` // Increased visual feedback
             }}>
                 {isRecording ? <RecordVoiceOver style={{ fontSize: 50, color: 'white' }} /> : <Mic style={{ fontSize: 50, color: 'white' }} />}
             </div>
