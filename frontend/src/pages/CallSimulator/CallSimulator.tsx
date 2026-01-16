@@ -65,6 +65,7 @@ const CallSimulator: React.FC = () => {
   const [transcript, setTranscript] = useState<{role: string, text: string}[]>([]);
   const [incidentData, setIncidentData] = useState<any>(null);
   const [volume, setVolume] = useState(0);
+  const [calibrating, setCalibrating] = useState(false);
 
   // Refs for Audio/Socket logic
   const socketRef = useRef<Socket | null>(null);
@@ -79,6 +80,8 @@ const CallSimulator: React.FC = () => {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSpeakingRef = useRef(false);
+  const noiseLevelRef = useRef(0);
+  const calibrationSamplesRef = useRef<number[]>([]);
 
   useEffect(() => {
     // Инициализация сокета (URL бэкенда)
@@ -129,36 +132,76 @@ const CallSimulator: React.FC = () => {
     };
   }, []);
 
+  const calibrateNoiseLevel = () => {
+    return new Promise<void>((resolve) => {
+      setCalibrating(true);
+      setStatus("Калибровка уровня шума...");
+      calibrationSamplesRef.current = [];
+      
+      const calibrate = () => {
+        if (!analyserRef.current) return;
+        
+        const bufferLength = analyserRef.current.fftSize;
+        const dataArray = new Uint8Array(bufferLength);
+        analyserRef.current.getByteTimeDomainData(dataArray);
+        
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+            const val = (dataArray[i] - 128) / 128;
+            sum += val * val;
+        }
+        const rms = Math.sqrt(sum / bufferLength);
+        const volume = rms * 100;
+        
+        calibrationSamplesRef.current.push(volume);
+        
+        if (calibrationSamplesRef.current.length >= 60) { // ~2 seconds at 30fps
+          const avgNoise = calibrationSamplesRef.current.reduce((a, b) => a + b) / calibrationSamplesRef.current.length;
+          noiseLevelRef.current = avgNoise + 5; // Moderate buffer for noise rejection
+          console.log(`[calibrateNoiseLevel] Calibrated noise level: ${avgNoise}, threshold: ${noiseLevelRef.current}`);
+          setCalibrating(false);
+          setStatus("🎙️ Слушаю...");
+          resolve();
+        } else {
+          requestAnimationFrame(calibrate);
+        }
+      };
+      
+      calibrate();
+    });
+  };
+
   const startCall = async () => {
     try {
-        setStatus("⏳ Подключение...");
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            audio: { sampleRate: 16000, echoCancellation: true } 
-        });
-        mediaStreamRef.current = stream;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
 
-        // Отправка события начала звонка с DeviceInfo
-        const deviceInfo = {
-            userAgent: navigator.userAgent,
-            timestamp: new Date().toISOString()
-        };
-        socketRef.current?.emit("call-ai", { deviceInfo });
+      // Отправка события начала звонка с DeviceInfo
+      const deviceInfo = {
+        userAgent: navigator.userAgent,
+        timestamp: new Date().toISOString()
+      };
+      socketRef.current?.emit("call-ai", { deviceInfo });
 
     } catch (err) {
-        console.error(err);
-        setStatus("❌ Ошибка доступа к микрофону");
+      console.error(err);
+      setStatus("❌ Ошибка доступа к микрофону");
     }
   };
 
   const startListening = async () => {
       if (!mediaStreamRef.current) return;
 
+      console.log("[startListening] Starting audio processing...");
+
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const ctx = new AudioContextClass({ sampleRate: 16000 });
       audioContextRef.current = ctx;
 
       try {
+        console.log("[startListening] Loading audio-processor.js...");
         await ctx.audioWorklet.addModule('/audio-processor.js'); 
+        console.log("[startListening] AudioWorklet module loaded successfully");
       } catch (e) {
         console.error("Failed to load audio-processor.js. Ensure it exists in /public folder.", e);
         setStatus("❌ Ошибка: audio-processor не найден");
@@ -170,11 +213,14 @@ const CallSimulator: React.FC = () => {
       analyser.fftSize = 1024;
       analyserRef.current = analyser;
 
+      console.log("[startListening] Creating AudioWorkletNode...");
       const processor = new AudioWorkletNode(ctx, 'audio-recorder-processor');
       processorRef.current = processor;
+      console.log("[startListening] AudioWorkletNode created");
 
       processor.port.onmessage = (e) => {
           if (e.data.type === 'audioChunk' && isSpeakingRef.current) {
+              console.log(`[startListening] Received audio chunk of length: ${e.data.chunk.length}`);
               audioChunksRef.current.push(e.data.chunk);
           }
       };
@@ -183,6 +229,8 @@ const CallSimulator: React.FC = () => {
       source.connect(processor);
       processor.connect(ctx.destination); 
 
+      console.log("[startListening] Audio graph connected, starting noise calibration");
+      await calibrateNoiseLevel();
       detectVoiceActivity();
   };
 
@@ -190,23 +238,30 @@ const CallSimulator: React.FC = () => {
       // Check if call is still active
       if (!analyserRef.current || !mediaStreamRef.current?.active) return;
 
-      const bufferLength = analyserRef.current.frequencyBinCount;
+      const bufferLength = analyserRef.current.fftSize;
       const dataArray = new Uint8Array(bufferLength);
-      analyserRef.current.getByteFrequencyData(dataArray);
+      analyserRef.current.getByteTimeDomainData(dataArray);
 
       let sum = 0;
-      for(let i = 0; i < bufferLength; i++) sum += dataArray[i];
-      const avg = sum / bufferLength;
-      setVolume(avg);
+      for (let i = 0; i < bufferLength; i++) {
+          const val = (dataArray[i] - 128) / 128; // normalize to -1 to 1
+          sum += val * val;
+      }
+      const rms = Math.sqrt(sum / bufferLength);
+      const volume = rms * 100; // scale to 0-100
+      setVolume(volume);
 
-      const THRESHOLD = 15; // Decreased threshold slightly for better sensitivity
+      console.log(`[detectVoiceActivity] volume: ${volume}, noiseLevel: ${noiseLevelRef.current}, isSpeaking: ${isSpeakingRef.current}`);
 
-      if (avg > THRESHOLD) {
+      const THRESHOLD = noiseLevelRef.current || 5; // Use calibrated noise level or fallback
+
+      if (volume > THRESHOLD) {
           if (!isSpeakingRef.current) {
               console.log("🗣️ Speech started");
               isSpeakingRef.current = true;
               setIsRecording(true);
               audioChunksRef.current = [];
+              console.log("[detectVoiceActivity] Clearing audioChunksRef and starting recording");
               processorRef.current?.port.postMessage({ type: 'startRecording' });
               
               if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -215,6 +270,7 @@ const CallSimulator: React.FC = () => {
           
       } else {
           if (isSpeakingRef.current && !silenceTimerRef.current) {
+              console.log("🤫 Silence detected, setting timer...");
               silenceTimerRef.current = setTimeout(() => {
                   console.log("🤫 Silence detected, sending...");
                   stopRecordingAndSend();
@@ -233,7 +289,12 @@ const CallSimulator: React.FC = () => {
       // Clear silence timer ref so it can trigger again next time
       silenceTimerRef.current = null;
 
-      if (audioChunksRef.current.length === 0) return;
+      console.log(`[stopRecordingAndSend] audioChunksRef.current.length: ${audioChunksRef.current.length}`);
+
+      if (audioChunksRef.current.length === 0) {
+          console.log("[stopRecordingAndSend] No audio chunks to send");
+          return;
+      }
 
       console.log(`Sending ${audioChunksRef.current.length} chunks...`);
 
@@ -244,14 +305,20 @@ const CallSimulator: React.FC = () => {
           offset += chunk.length;
       }
       
+      console.log(`[stopRecordingAndSend] Created flat array of length: ${flat.length}`);
+      
       const audioBuffer = audioContextRef.current!.createBuffer(1, flat.length, 16000);
       audioBuffer.copyToChannel(flat, 0);
       
       const wavBlob = audioBufferToWav(audioBuffer);
+      console.log(`[stopRecordingAndSend] Created WAV blob of size: ${wavBlob.size} bytes`);
+      
       const base64 = await blobToBase64(wavBlob);
+      console.log(`[stopRecordingAndSend] Converted to base64, length: ${base64.length}`);
 
       // FIXED: Use the correct sessionIdRef
       if (sessionIdRef.current && socketRef.current) {
+        console.log(`[stopRecordingAndSend] Sending audio-chunk to session ${sessionIdRef.current}`);
         socketRef.current.emit("audio-chunk", {
             sessionId: sessionIdRef.current, 
             audioData: base64
@@ -288,6 +355,9 @@ const CallSimulator: React.FC = () => {
       <Typography variant="h4" gutterBottom>📞 NG911 Голосовой Терминал</Typography>
       
       <Paper sx={{ p: 3, mb: 3, textAlign: 'center', background: isCalling ? '#e3f2fd' : '#fff' }}>
+        <Typography variant="h6" sx={{ mb: 2, color: calibrating ? '#ff9800' : 'inherit' }}>
+          {calibrating ? '🎛️ Калибровка уровня шума...' : status}
+        </Typography>
         <Box sx={{ position: 'relative', display: 'inline-block', mb: 2 }}>
             <div style={{
                 width: 100, height: 100, borderRadius: '50%',
