@@ -13,7 +13,7 @@ import { TelegramModule } from './modules/telegram/telegram.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
 
 // Configuration
-import { configuration } from './config/configuration';
+import configuration from './config/configuration';
 
 @Module({
   imports: [
