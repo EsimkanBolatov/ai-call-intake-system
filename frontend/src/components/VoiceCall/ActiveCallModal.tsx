@@ -148,16 +148,24 @@ const ActiveCallModal: React.FC<ActiveCallModalProps> = ({ open, onClose }) => {
         if (socketRef.current) {
             if (sessionId) socketRef.current.emit('end-ai-call', { sessionId });
             socketRef.current.disconnect();
+            socketRef.current = null; // Важно обнулить
         }
+        
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(t => t.stop());
+            streamRef.current = null;
         }
-        if (audioContextRef.current) {
-            audioContextRef.current.close();
+
+        // ИСПРАВЛЕНИЕ ЗДЕСЬ: Проверка состояния перед закрытием
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.close().catch(e => console.error("Error closing AudioContext", e));
         }
+        audioContextRef.current = null;
+
         setTranscript([]);
         setIncidentData({});
         setSessionId(null);
+        setStatus('Звонок завершен');
     };
 
     // --- Helpers ---
