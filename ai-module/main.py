@@ -6,6 +6,11 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
+import base64
+import sys
+
+# Add parent directory to path to import services
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 load_dotenv()
 
@@ -26,15 +31,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Services
-speech_service = SpeechToTextService()
-classifier_service = NLPClassifierService()
-priority_service = PriorityDetectorService()
-openai_classifier_service = OpenAIClassifierService()
-tts_service = TTSService()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Services
+logger.info("Initializing services...")
+speech_service = SpeechToTextService()
+logger.info("Speech service initialized")
+classifier_service = NLPClassifierService()
+logger.info("NLP classifier initialized")
+priority_service = PriorityDetectorService()
+logger.info("Priority service initialized")
+openai_classifier_service = OpenAIClassifierService()
+logger.info("OpenAI classifier initialized")
+tts_service = TTSService()
+logger.info("TTS service initialized")
+logger.info("All services initialized successfully")
 
 
 class TranscriptionRequest(BaseModel):
@@ -61,6 +73,21 @@ class EnhancedClassificationResponse(BaseModel):
     summary: str
     recommended_action: str
     recommended_department: str
+
+
+class ProcessCallRequest(BaseModel):
+    sessionId: str
+    audioData: str  # base64 encoded audio
+    sampleRate: int = 16000
+    channels: int = 1
+    history: Optional[list] = None
+
+
+class ProcessCallResponse(BaseModel):
+    userText: str
+    responseText: str
+    audioBase64: Optional[str] = None
+    incident: dict
 
 
 class ProcessCallRequest(BaseModel):
@@ -231,6 +258,75 @@ async def process_call(request: ProcessCallRequest):
         logger.error(f"Process call error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/process-call", response_model=ProcessCallResponse)
+async def process_call(request: ProcessCallRequest):
+    """
+    Process a voice call: STT -> Classification -> LLM Response -> TTS
+    """
+    try:
+        session_id = request.sessionId
+        logger.info(f"Processing call for session {session_id}")
+
+        # 1. Decode audio from base64
+        audio_data = base64.b64decode(request.audioData)
+
+        # 2. Speech to Text
+        user_text = speech_service.transcribe(audio_data, "ru")
+        if not user_text or len(user_text.strip()) < 2:
+            return ProcessCallResponse(
+                userText="",
+                responseText="",
+                audioBase64=None,
+                incident={}
+            )
+
+        logger.info(f"[{session_id}] STT: {user_text}")
+
+        # 3. Classify and analyze
+        classification = openai_classifier_service.classify(user_text)
+
+        # 4. Generate dispatcher response using LLM
+        # For now, use a simple response based on classification
+        if classification.priority == "critical":
+            response_text = f"Критическая ситуация! {classification.recommended_action} Где вы находитесь?"
+        elif classification.priority == "high":
+            response_text = f"Ситуация срочная. {classification.recommended_action} Подробности?"
+        else:
+            response_text = f"Понял. {classification.recommended_action} Что еще можете рассказать?"
+
+        # 5. Text to Speech
+        audio_response = None
+        try:
+            audio_response = tts_service.generate_speech(response_text, "ru")
+            if audio_response:
+                audio_base64 = base64.b64encode(audio_response).decode('utf-8')
+            else:
+                audio_base64 = None
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+            audio_base64 = None
+
+        # 6. Prepare incident data
+        incident = {
+            "priority": classification.priority,
+            "category": classification.categories[0] if classification.categories else "Не определено",
+            "service_type": classification.service_type,
+            "address": classification.extracted_info.get("address", "Не указан"),
+            "summary": classification.summary,
+            "recommended_department": classification.recommended_department
+        }
+
+        return ProcessCallResponse(
+            userText=user_text,
+            responseText=response_text,
+            audioBase64=audio_base64,
+            incident=incident
+        )
+
+    except Exception as e:
+        logger.error(f"Process call error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Don't run server here, use uvicorn command instead
+    pass

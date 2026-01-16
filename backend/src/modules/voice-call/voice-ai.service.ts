@@ -7,7 +7,6 @@ import { CasesService } from '../cases/cases.service';
 
 @Injectable()
 export class VoiceAiService { // <--- БЫЛО AiService, СТАЛО VoiceAiService
-  private openai: OpenAI;
   private logger = new Logger(VoiceAiService.name); // <--- Обновили имя логгера
   
   // Хранилище контекста диалогов (Session ID -> Data)
@@ -94,162 +93,20 @@ export class VoiceAiService { // <--- БЫЛО AiService, СТАЛО VoiceAiServ
     }
   }
 
-  /**
-   * Реальная транскрипция через Whisper (Helper)
-   */
-  async speechToText(audioBuffer: Buffer, sessionId: string): Promise<string> {
-    const tempPath = path.join(this.tempDir, `${sessionId}_stt_${Date.now()}.wav`);
-    try {
-      fs.writeFileSync(tempPath, audioBuffer);
-      const transcription = await this.openai.audio.transcriptions.create({
-        file: fs.createReadStream(tempPath),
-        model: "whisper-1",
-        language: "ru",
-      });
-      return transcription.text;
-    } catch (error) {
-      this.logger.error(`STT Error: ${error.message}`);
-      return ""; 
-    } finally {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-    }
-  }
-
-  /**
-   * Генерация голоса через TTS (Helper)
-   */
-  async textToSpeech(text: string): Promise<Buffer> {
-    try {
-        const mp3 = await this.openai.audio.speech.create({
-            model: "tts-1",
-            voice: "alloy", // alloy, echo, fable, onyx, nova, shimmer
-            input: text,
-            response_format: "mp3",
-        });
-        return Buffer.from(await mp3.arrayBuffer());
-    } catch (e) { 
-        this.logger.error(`TTS Error: ${e.message}`);
-        return Buffer.from(""); 
-    }
-  }
-
-  /**
-   * Персона Диспетчера 102
-   */
-  async generateDispatcherResponse(userMessage: string, sessionId: string, incidentContext: any) {
-    if (!this.dispatcherHistory.has(sessionId)) {
-      this.dispatcherHistory.set(sessionId, [{
-          role: "system",
-          content: `Ты — диспетчер экстренных служб 102 (полиция).
-Твоя задача — профессионально общаться с заявителем.
-
-ПРИНЦИПЫ:
-1. **ПРИОРИТЕТ ЖИЗНИ**: Если угроза жизни — СРАЗУ отправляй наряд.
-2. **АДАПТИВНОСТЬ**:
-   * **CRITICAL**: Только "ГДЕ?" и "ЕСТЬ ЛИ ОРУЖИЕ?".
-   * **MEDIUM**: Действуй по протоколу (Что, Где, Кто).
-3. **СТИЛЬ**: Кратко (макс 2 предложения). Четкие команды.`
-      }]);
-    }
-
-    const history = this.dispatcherHistory.get(sessionId);
-    
-    // Добавляем контекст срочности
-    let systemContext = "";
-    if (incidentContext?.priority === 'critical' || incidentContext?.priority === 'high') {
-        systemContext = `[СИТУАЦИЯ КРИТИЧЕСКАЯ! ПРИОРИТЕТ: ${incidentContext.priority}. БУДЬ ПРЕДЕЛЬНО КРАТОК!]`;
-    }
-    
-    history.push({ role: "user", content: systemContext ? `${systemContext} ${userMessage}` : userMessage });
-
-    const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: history,
-        max_tokens: 150,
-    });
-
-    const response = completion.choices[0].message.content;
-    history.push({ role: "assistant", content: response });
-    
-    // Ограничиваем историю
-    if (history.length > 20) {
-         this.dispatcherHistory.set(sessionId, [history[0], ...history.slice(-18)]);
-    }
-    
-    return response;
-  }
-
-  /**
-   * Анализ для ЕРДР (JSON Extractor)
-   */
-  async analyzeIncidentForErdr(text: string) {
-    try {
-      const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `Верни ТОЛЬКО валидный JSON для регистрации в ЕРДР.
-Поля:
-- priority: "critical" | "high" | "medium" | "low"
-- categoryRu: "название категории (ДТП, Кража, Убийство...)"
-- address: "адрес происшествия или null"
-- callerName: "ФИО заявителя или null"
-- erdr_event_description: "Краткая фабула для протокола"
-- erdr_district: "Заводской район" (по умолчанию) или "Алматинский район"
-- emotion: "эмоция заявителя"`
-          },
-          { role: "user", content: text }
-        ],
-        response_format: { type: "json_object" }
-      });
-      return JSON.parse(completion.choices[0].message.content);
-    } catch (e) { 
-        return { priority: "medium", categoryRu: "Не определено" }; 
-    }
-  }
-
-  private mergeIncidentData(sessionId: string, newData: any) {
-    const current = this.incidentData.get(sessionId) || {};
-    // Простой merge, приоритет новым данным, если они не null
-    const merged = { ...current };
-    Object.keys(newData).forEach(key => {
-        if (newData[key] !== null && newData[key] !== undefined && newData[key] !== "Не определено") {
-            merged[key] = newData[key];
-        }
-    });
-    this.incidentData.set(sessionId, merged);
-    return merged;
-  }
-
   // ========================================================================
   // 🔵 ЧАСТЬ 2: REST API (Web Simulator Functions)
   // ========================================================================
 
   /**
-   * Классификация текста (для веб-симулятора)
+   * Классификация текста (для веб-симулятора) - прокси в AI модуль
    */
   async classifyText(text: string) {
     try {
-      const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `Ты диспетчер. Проанализируй текст и верни JSON:
-            {
-              "categories": ["категория"],
-              "priority": "high/medium/low",
-              "serviceType": "police/fire/ambulance/emergency/other",
-              "emotion": "спокойный/паника/агрессия",
-              "keywords": ["слова"]
-            }`
-          },
-          { role: "user", content: text }
-        ],
-        response_format: { type: "json_object" }
+      const response = await axios.post(`${this.aiModuleUrl}/classify`, {
+        text: text,
+        enhanced: true
       });
-      return JSON.parse(completion.choices[0].message.content);
+      return response.data;
     } catch (e) {
       this.logger.error("Classify Text Error", e);
       return { categories: ["error"], priority: "low", serviceType: "other" };
@@ -257,25 +114,18 @@ export class VoiceAiService { // <--- БЫЛО AiService, СТАЛО VoiceAiServ
   }
 
   /**
-   * Реальная транскрипция файла (для REST API загрузки)
+   * Реальная транскрипция файла (для REST API загрузки) - прокси в AI модуль
    */
   async transcribeAudio(file: Express.Multer.File) {
-    const tempPath = path.join(this.tempDir, `rest_upload_${Date.now()}_${file.originalname}`);
     try {
-        fs.writeFileSync(tempPath, file.buffer);
-        
-        const transcription = await this.openai.audio.transcriptions.create({
-            file: fs.createReadStream(tempPath),
-            model: "whisper-1",
-            language: "ru",
+        const response = await axios.post(`${this.aiModuleUrl}/transcribe`, {
+          // TODO: отправить файл через multipart/form-data
+          // Пока заглушка
         });
-        
-        return { text: transcription.text };
+        return response.data;
     } catch (error) {
         this.logger.error("REST Transcribe Error", error);
         throw new Error("Ошибка транскрипции");
-    } finally {
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     }
   }
 
