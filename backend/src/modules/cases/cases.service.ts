@@ -3,6 +3,8 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Case } from "./case.entity";
 import axios from "axios";
+import * as fs from 'fs';
+import * as FormData from 'form-data';
 
 @Injectable()
 export class CasesService {
@@ -347,5 +349,69 @@ export class CasesService {
     }
     caseToUpdate.serviceType = serviceType;
     return this.casesRepository.save(caseToUpdate);
+  }
+
+ async sendToErdr(caseId: string): Promise<any> {
+    const caseData = await this.findOne(caseId);
+    if (!caseData) throw new Error("Case not found");
+
+    const ERDR_API_URL = "http://127.0.0.1:8000"; // Python сервис
+    this.logger.log(`[ERDR] Sending case ${caseId} to ${ERDR_API_URL}...`);
+
+    let audioFilename = null;
+
+    if (caseData.audioUrl && fs.existsSync(caseData.audioUrl)) {
+        try {
+            const formData = new FormData();
+            formData.append('file', fs.createReadStream(caseData.audioUrl));
+            
+            const uploadRes = await axios.post(`${ERDR_API_URL}/api/external/upload_audio`, formData, {
+                headers: { ...formData.getHeaders() }
+            });
+            audioFilename = uploadRes.data.filename;
+            this.logger.log(`[ERDR] Audio uploaded: ${audioFilename}`);
+        } catch (e) {
+            this.logger.error(`[ERDR] Audio upload error: ${e.message}`);
+        }
+    }
+
+    // 2. Генерация KUI
+    const kui = "2631" + Math.floor(Math.random() * 100000000000).toString().padStart(11, '0');
+
+    // 3. Формирование JSON
+    const payload = {
+        kui_number: kui,
+        reg_organ: "19310003",
+        district: caseData.erdr_district || "Заводской район", // Нужно добавить это поле в Entity или брать из description
+        reg_date: this.formatDate(caseData.createdAt),
+        event_description: caseData.description || "Автоматическая регистрация",
+        
+        // Маппинг полей из CaseEntity
+        field_5_1: "прочие", // Можно улучшить логику маппинга
+        field_5_6: "Нет",
+        
+        audio_record: audioFilename,
+        
+        msg_type: "08 Сообщение ЦОУ",
+        cou_reg_number: `AI-${caseData.id.substring(0,8).toUpperCase()}`,
+        
+        mobile_phone: caseData.phoneNumber || "Не определен"
+    };
+
+    // 4. Отправка JSON
+    try {
+        const res = await axios.post(`${ERDR_API_URL}/api/external/receive_data`, payload);
+        this.logger.log(`[ERDR] Success! ID: ${res.data.id}`);
+        return res.data;
+    } catch (e) {
+        this.logger.error(`[ERDR] Send error: ${e.message}`);
+        throw e;
+    }
+  }
+
+  private formatDate(date: Date): string {
+    const d = new Date(date);
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 }
