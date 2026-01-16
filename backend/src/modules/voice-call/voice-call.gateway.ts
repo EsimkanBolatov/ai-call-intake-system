@@ -15,13 +15,25 @@ export class VoiceCallGateway implements OnGatewayDisconnect {
   constructor(private readonly voiceAiService: VoiceAiService) {}
 
   @SubscribeMessage('call-ai')
-  handleStartCall(@ConnectedSocket() client: Socket) {
+  async handleStartCall(
+    @MessageBody() data: { deviceInfo: any }, // Обновленная сигнатура
+    @ConnectedSocket() client: Socket
+  ) {
     const sessionId = randomUUID();
     this.sessionBuffers.set(sessionId, []);
     
-    // Инициализируем сессию
-    client.emit('ai-call-started', { sessionId });
+    // Логируем или сохраняем Device Info
     console.log(`[Gateway] Call started: ${sessionId}`);
+    if (data && data.deviceInfo) {
+        console.log(`[Gateway] Device Info:`, data.deviceInfo);
+        // TODO: Вызвать this.casesService.createEmptyCaseWithInfo(sessionId, data.deviceInfo)
+        // Но для MVP достаточно передать это в voiceAiService.startSession(sessionId, data.deviceInfo)
+    }
+    
+    // Инициализируем сессию в сервисе (если метод существует)
+    // await this.voiceAiService.startSession(sessionId, data?.deviceInfo);
+
+    client.emit('ai-call-started', { sessionId });
   }
 
   @SubscribeMessage('audio-chunk')

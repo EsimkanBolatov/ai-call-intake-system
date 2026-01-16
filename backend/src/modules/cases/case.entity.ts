@@ -24,48 +24,59 @@ export class Case {
   status: string; // pending, assigned, in_progress, completed, cancelled
 
   @Column({ nullable: true })
-  phoneNumber: string; // Номер звонящего (87074536449)
+  phoneNumber: string; // Номер звонящего
 
   @Column({ type: "text", nullable: true })
-  transcription: string; // Транскрипция разговора
+  transcription: string; // Текстовая транскрипция (сплошной текст)
+
+  // --- НОВЫЕ ПОЛЯ ДЛЯ AI & ЕРДР ---
+  @Column({ type: "simple-json", nullable: true })
+  transcript: any[]; // Структурированная история диалога (JSON)
+
+  @Column({ nullable: true })
+  erdr_district: string; // Район для ЕРДР (Заводской, Алматинский и т.д.)
+
+  @Column({ type: "simple-json", nullable: true })
+  callerInfo: any; // Техническая информация (IP, Geo, Device)
+  // --------------------------------
 
   @Column({ type: "text", nullable: true })
-  textVersion: string; // Текстовая версия (может быть равно transcription)
+  textVersion: string; 
 
   @Column({ nullable: true })
-  category: string; // срочный, нормальный, просто
+  category: string; 
 
   @Column({ nullable: true })
-  serviceType: string; // fire, emergency, ambulance, police, other
+  serviceType: string; 
 
   @Column({ nullable: true })
-  priority: string; // high, medium, low
+  priority: string; 
 
   @Column({ nullable: true })
   audioUrl: string; // Ссылка на аудиозапись
 
   @Column({ default: false })
-  isCompleted: boolean; // Птичка - выполнено
+  isCompleted: boolean; 
 
   @Column({ nullable: true })
   completedAt: Date;
 
   @Column({ nullable: true })
-  operatorId: string; // Оператор, принявший звонок
+  operatorId: string; 
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: "operatorId" })
   operator: User;
 
   @Column({ nullable: true })
-  assigneeId: string; // Сотрудник, назначенный на выполнение
+  assigneeId: string; 
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: "assigneeId" })
   assignee: User;
 
   @Column({ type: "simple-json", nullable: true })
-  metadata: any; // Дополнительные данные (локация, детали)
+  metadata: any; 
 
   @CreateDateColumn()
   createdAt: Date;

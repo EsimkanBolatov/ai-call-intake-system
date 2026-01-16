@@ -1,564 +1,332 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
-  Box,
-  Typography,
-  Paper,
-  TextField,
-  Button,
-  Stack,
-  Chip,
-  Divider,
-  Alert,
-  CircularProgress,
-  Card,
-  CardContent,
-  Snackbar,
+  Box, Typography, Paper, Button, Stack, Card, CardContent, Chip
 } from "@mui/material";
-import {
-  Phone,
-  Send,
-  Refresh,
-  PriorityHigh,
-  LocalFireDepartment,
-  Emergency,
-  LocalHospital,
-  Security,
-  Notifications,
-  EditNote,
-  Mic, // Добавлена иконка микрофона
-} from "@mui/icons-material";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { casesApi, aiApi } from "../../services/api";
-import { useNavigate } from "react-router-dom";
-import ActiveCallModal from '../../components/VoiceCall/ActiveCallModal'; // Импорт компонента
+import { Mic, PhoneDisabled, RecordVoiceOver, SettingsVoice } from "@mui/icons-material";
+import { io, Socket } from "socket.io-client";
+
+// Хелперы для WAV
+const audioBufferToWav = (buffer: AudioBuffer) => {
+  const numChannels = 1;
+  const sampleRate = buffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const samples = buffer.getChannelData(0);
+  const dataLength = samples.length * bytesPerSample;
+  const bufferLen = 44 + dataLength;
+  const arrayBuffer = new ArrayBuffer(bufferLen);
+  const view = new DataView(arrayBuffer);
+
+  const writeString = (view: DataView, offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+  };
+
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeString(view, 8, 'WAVE');
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, format, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitDepth, true);
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    let s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+  return new Blob([arrayBuffer], { type: 'audio/wav' });
+};
+
+const blobToBase64 = (blob: Blob): Promise<string> => {
+  return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+          const res = reader.result as string;
+          resolve(res.split(',')[1]);
+      };
+      reader.readAsDataURL(blob);
+  });
+};
 
 const CallSimulator: React.FC = () => {
-  // Состояние для управления модальным окном звонка
-  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+  // UI States
+  const [status, setStatus] = useState<string>("Готов к звонку");
+  const [isCalling, setIsCalling] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcript, setTranscript] = useState<{role: string, text: string}[]>([]);
+  const [incidentData, setIncidentData] = useState<any>(null);
+  const [volume, setVolume] = useState(0);
 
-  const [callText, setCallText] = useState<string>("");
-  const [phoneNumber, setPhoneNumber] = useState<string>("+77071234567");
-  const [analysisResult, setAnalysisResult] = useState<{
-    category: string;
-    priority: string;
-    serviceType: string;
-    emotion?: string;
-    keywords: string[];
-  } | null>(null);
-  const [createdCase, setCreatedCase] = useState<any>(null);
-  const [snackbar, setSnackbar] = useState<{
-    open: boolean;
-    message: string;
-    severity: "success" | "error" | "info";
-  }>({
-    open: false,
-    message: "",
-    severity: "info",
-  });
+  // Refs for Audio/Socket logic
+  const socketRef = useRef<Socket | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<AudioWorkletNode | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Float32Array[]>([]);
+  const aiAudioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // VAD Refs
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  // ИСПРАВЛЕНИЕ 1: Используем универсальный тип для таймера
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isSpeakingRef = useRef(false);
 
-  // Уведомление о симуляции вызова (отдельный Snackbar)
-  const [callNotification, setCallNotification] = useState<{
-    open: boolean;
-    message: string;
-    severity: "success" | "error" | "info";
-  }>({
-    open: false,
-    message: "",
-    severity: "info",
-  });
-
-  // Плашка над полем ввода, показывается при вводе текста
-  const [inputNotification, setInputNotification] = useState<{
-    show: boolean;
-    message: string;
-  }>({
-    show: false,
-    message: "",
-  });
-
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-
-  const analyzeMutation = useMutation({
-    mutationFn: (text: string) => aiApi.classify(text),
-    onSuccess: (data) => {
-      setAnalysisResult({
-        category: data.categories?.[0] || "просто",
-        priority: data.priority || "low",
-        serviceType: data.serviceType || "other",
-        emotion: data.emotion,
-        keywords: data.keywords || [],
-      });
-      setSnackbar({
-        open: true,
-        message: "Анализ завершён. Определены категория, приоритет и служба.",
-        severity: "success",
-      });
-    },
-    onError: () => {
-      setAnalysisResult({
-        category: "просто",
-        priority: "low",
-        serviceType: "other",
-        keywords: [],
-      });
-      setSnackbar({
-        open: true,
-        message: "Ошибка анализа. Используются значения по умолчанию.",
-        severity: "error",
-      });
-    },
-  });
-
-  const createCaseMutation = useMutation({
-    mutationFn: (data: { phoneNumber: string; transcription: string }) =>
-      casesApi.createIncomingCall(data),
-    onSuccess: (data) => {
-      setCreatedCase(data);
-      // Invalidate queries to refresh cases list and dashboard
-      queryClient.invalidateQueries({ queryKey: ["cases"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboardStats"] });
-      // Показать уведомление о симуляции
-      const truncatedText =
-        callText.length > 50 ? callText.substring(0, 50) + "..." : callText;
-      setCallNotification({
-        open: true,
-        message: `Обращение создано: "${truncatedText}". Запись добавлена в журнал.`,
-        severity: "success",
-      });
-    },
-    onError: (error) => {
-      setCallNotification({
-        open: true,
-        message: `Ошибка создания обращения: ${error.message}`,
-        severity: "error",
-      });
-    },
-  });
-
-  const handleCallTextChange = (text: string) => {
-    setCallText(text);
-    // Показываем плашку, если текст не пустой
-    if (text.trim().length > 0) {
-      setInputNotification({
-        show: true,
-        message: "Идёт ввод обращения...",
-      });
-    } else {
-      setInputNotification({ show: false, message: "" });
-    }
-  };
-
-  const handleAnalyze = () => {
-    if (!callText.trim()) return;
-    analyzeMutation.mutate(callText);
-  };
-
-  const handleSimulateCall = () => {
-    if (!callText.trim()) return;
-    createCaseMutation.mutate({
-      phoneNumber,
-      transcription: callText,
+  useEffect(() => {
+    // Инициализация сокета (URL бэкенда)
+    socketRef.current = io("http://localhost:3000", { 
+        transports: ["websocket"],
+        path: "/socket.io/"
     });
-  };
 
-  const handleReset = () => {
-    setCallText("");
-    setAnalysisResult(null);
-    setCreatedCase(null);
-  };
+    socketRef.current.on("connect", () => console.log("Socket connected"));
+    
+    // ИСПРАВЛЕНИЕ 2: Убрали неиспользуемую переменную sessionId
+    socketRef.current.on("ai-call-started", () => {
+        setStatus("🟢 Соединение установлено. Говорите...");
+        setIsCalling(true);
+        startListening();
+    });
 
-  const handleViewCase = () => {
-    if (createdCase?.id) {
-      navigate(`/cases/${createdCase.id}`);
+    socketRef.current.on("ai-response", (data) => {
+        setStatus("🤖 AI отвечает...");
+        
+        // Добавляем в чат
+        setTranscript(prev => [
+            ...prev, 
+            { role: 'user', text: data.text },
+            { role: 'ai', text: data.response }
+        ]);
+
+        if (data.incident) setIncidentData(data.incident);
+
+        // Воспроизведение аудио
+        if (data.audio) {
+            const audioSrc = `data:audio/mp3;base64,${data.audio}`;
+            if (aiAudioRef.current) {
+                aiAudioRef.current.src = audioSrc;
+                aiAudioRef.current.play();
+                aiAudioRef.current.onended = () => {
+                   setStatus("🎙️ Слушаю...");
+                };
+            }
+        }
+    });
+
+    return () => {
+        socketRef.current?.disconnect();
+        stopAudio();
+    };
+  }, []);
+
+  const startCall = async () => {
+    try {
+        setStatus("⏳ Подключение...");
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: { sampleRate: 16000, echoCancellation: true } 
+        });
+        mediaStreamRef.current = stream;
+
+        // Отправка события начала звонка с DeviceInfo
+        const deviceInfo = {
+            userAgent: navigator.userAgent,
+            timestamp: new Date().toISOString()
+        };
+        socketRef.current?.emit("call-ai", { deviceInfo });
+
+    } catch (err) {
+        console.error(err);
+        setStatus("❌ Ошибка доступа к микрофону");
     }
   };
 
-  const handleCloseSnackbar = () => {
-    setSnackbar((prev) => ({ ...prev, open: false }));
+  const startListening = async () => {
+      if (!mediaStreamRef.current) return;
+
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioContextClass({ sampleRate: 16000 });
+      audioContextRef.current = ctx;
+
+      await ctx.audioWorklet.addModule('/audio-processor.js'); 
+      
+      const source = ctx.createMediaStreamSource(mediaStreamRef.current);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyserRef.current = analyser;
+
+      const processor = new AudioWorkletNode(ctx, 'audio-recorder-processor');
+      processorRef.current = processor;
+
+      processor.port.onmessage = (e) => {
+          if (e.data.type === 'audioChunk' && isSpeakingRef.current) {
+              audioChunksRef.current.push(e.data.chunk);
+          }
+      };
+
+      source.connect(analyser);
+      source.connect(processor);
+      processor.connect(ctx.destination); 
+
+      detectVoiceActivity();
   };
 
-  const handleCloseCallNotification = () => {
-    setCallNotification((prev) => ({ ...prev, open: false }));
+  const detectVoiceActivity = () => {
+      if (!analyserRef.current || !isCalling) return;
+
+      const bufferLength = analyserRef.current.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      analyserRef.current.getByteFrequencyData(dataArray);
+
+      let sum = 0;
+      for(let i = 0; i < bufferLength; i++) sum += dataArray[i];
+      const avg = sum / bufferLength;
+      setVolume(avg);
+
+      const THRESHOLD = 20;
+
+      if (avg > THRESHOLD) {
+          if (!isSpeakingRef.current) {
+              console.log("🗣️ Speech started");
+              isSpeakingRef.current = true;
+              setIsRecording(true);
+              audioChunksRef.current = [];
+              processorRef.current?.port.postMessage({ type: 'startRecording' });
+              
+              if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+          }
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+          
+      } else {
+          if (isSpeakingRef.current && !silenceTimerRef.current) {
+              silenceTimerRef.current = setTimeout(() => {
+                  console.log("🤫 Silence detected, sending...");
+                  stopRecordingAndSend();
+              }, 1000);
+          }
+      }
+
+      requestAnimationFrame(detectVoiceActivity);
   };
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case "high":
-        return "error";
-      case "medium":
-        return "warning";
-      case "low":
-        return "success";
-      default:
-        return "default";
-    }
+  const stopRecordingAndSend = async () => {
+      isSpeakingRef.current = false;
+      setIsRecording(false);
+      processorRef.current?.port.postMessage({ type: 'stopRecording' });
+
+      if (audioChunksRef.current.length === 0) return;
+
+      const flat = new Float32Array(audioChunksRef.current.reduce((acc, val) => acc + val.length, 0));
+      let offset = 0;
+      for (const chunk of audioChunksRef.current) {
+          flat.set(chunk, offset);
+          offset += chunk.length;
+      }
+      
+      const audioBuffer = audioContextRef.current!.createBuffer(1, flat.length, 16000);
+      audioBuffer.copyToChannel(flat, 0);
+      
+      const wavBlob = audioBufferToWav(audioBuffer);
+      const base64 = await blobToBase64(wavBlob);
+
+      socketRef.current?.emit("audio-chunk", {
+          sessionId: "active-session", 
+          audioData: base64
+      });
+      
+      audioChunksRef.current = [];
   };
 
-  const getServiceIcon = (serviceType: string) => {
-    switch (serviceType) {
-      case "fire":
-        return <LocalFireDepartment />;
-      case "emergency":
-        return <Emergency />;
-      case "ambulance":
-        return <LocalHospital />;
-      case "police":
-        return <Security />;
-      default:
-        return <Phone />;
-    }
+  const stopAudio = () => {
+      audioContextRef.current?.close();
+      mediaStreamRef.current?.getTracks().forEach(t => t.stop());
+      setIsCalling(false);
+      setTranscript([]);
+      setIncidentData(null);
   };
 
-  const getServiceLabel = (serviceType: string) => {
-    switch (serviceType) {
-      case "fire":
-        return "Пожарный";
-      case "emergency":
-        return "ЧС";
-      case "ambulance":
-        return "Скорая";
-      case "police":
-        return "Полиция";
-      default:
-        return "Другое";
-    }
-  };
-
-  const exampleTexts = [
-    "У меня в доме пожар, помогите!",
-    "Произошло ДТП на пересечении улиц Жибек жолы и Абая, есть пострадавшие.",
-    "Сосед шумит, не даёт спать.",
-    "Вижу подозрительного человека с ножом во дворе.",
-    "У меня сильная боль в груди, нужна скорая.",
-  ];
-
-  const loadExample = (text: string) => {
-    setCallText(text);
-    setAnalysisResult(null);
+  const handleEndCall = () => {
+      socketRef.current?.emit("end-ai-call", { sessionId: "active-session" }); 
+      stopAudio();
+      setStatus("Звонок завершен");
   };
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h4" gutterBottom>
-        Симулятор экстренного вызова
-      </Typography>
-      <Typography variant="body1" color="text.secondary" paragraph>
-        Имитация входящего звонка в службу 112. Введите текст обращения для
-        анализа или воспользуйтесь голосовым режимом.
-      </Typography>
-
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: { xs: "column", md: "row" },
-          gap: 3,
-        }}
-      >
-        <Box sx={{ flex: 1 }}>
-          <Paper sx={{ p: 3 }}>
-            <Typography variant="h6" gutterBottom>
-              Ввод обращения
-            </Typography>
-            <Stack spacing={2}>
-              <TextField
-                label="Номер телефона"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                fullWidth
-              />
-              {inputNotification.show && (
-                <Alert
-                  severity="info"
-                  icon={<EditNote />}
-                  onClose={() =>
-                    setInputNotification({ show: false, message: "" })
-                  }
-                >
-                  {inputNotification.message}
-                </Alert>
-              )}
-              <TextField
-                label="Текст обращения"
-                multiline
-                rows={6}
-                value={callText}
-                onChange={(e) => handleCallTextChange(e.target.value)}
-                placeholder="Опишите ситуацию подробно..."
-                fullWidth
-              />
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                <Typography variant="body2" sx={{ alignSelf: "center" }}>
-                  Примеры:
-                </Typography>
-                {exampleTexts.map((text, idx) => (
-                  <Chip
-                    key={idx}
-                    label={text.substring(0, 30) + "..."}
-                    size="small"
-                    onClick={() => loadExample(text)}
-                    sx={{ mb: 1 }}
-                  />
-                ))}
-              </Stack>
-              <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap', gap: 1 }}>
-                <Button
-                  variant="contained"
-                  startIcon={<Send />}
-                  onClick={handleAnalyze}
-                  disabled={!callText.trim() || analyzeMutation.isPending}
-                >
-                  {analyzeMutation.isPending ? (
-                    <CircularProgress size={20} />
-                  ) : (
-                    "Анализировать"
-                  )}
-                </Button>
-                
-                {/* Новая кнопка для голосового вызова */}
-                <Button
-                  variant="contained"
-                  color="secondary"
-                  startIcon={<Mic />}
-                  onClick={() => setIsVoiceModalOpen(true)}
-                >
-                  Голосовой вызов (Demo)
-                </Button>
-
-                <Button
-                  variant="outlined"
-                  startIcon={<Refresh />}
-                  onClick={handleReset}
-                >
-                  Сброс
-                </Button>
-              </Stack>
-            </Stack>
-          </Paper>
-
-          {analysisResult && (
-            <Paper sx={{ p: 3, mt: 3 }}>
-              <Typography variant="h6" gutterBottom>
-                Результаты анализа ИИ
-              </Typography>
-              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
-                <Card variant="outlined" sx={{ flex: "1 1 200px" }}>
-                  <CardContent>
-                    <Typography variant="subtitle2">Категория</Typography>
-                    <Chip
-                      label={analysisResult.category}
-                      color={
-                        analysisResult.category === "срочный"
-                          ? "error"
-                          : "default"
-                      }
-                      sx={{ mt: 1 }}
-                    />
-                  </CardContent>
-                </Card>
-                <Card variant="outlined" sx={{ flex: "1 1 200px" }}>
-                  <CardContent>
-                    <Typography variant="subtitle2">Приоритет</Typography>
-                    <Chip
-                      label={analysisResult.priority}
-                      color={getPriorityColor(analysisResult.priority) as any}
-                      icon={<PriorityHigh />}
-                      sx={{ mt: 1 }}
-                    />
-                  </CardContent>
-                </Card>
-                <Card variant="outlined" sx={{ flex: "1 1 100%" }}>
-                  <CardContent>
-                    <Typography variant="subtitle2">
-                      Рекомендуемая служба
-                    </Typography>
-                    <Stack
-                      direction="row"
-                      spacing={2}
-                      alignItems="center"
-                      mt={1}
-                    >
-                      {getServiceIcon(analysisResult.serviceType)}
-                      <Typography variant="h6">
-                        {getServiceLabel(analysisResult.serviceType)}
-                      </Typography>
-                      <Chip
-                        label={analysisResult.serviceType}
-                        variant="outlined"
-                      />
-                    </Stack>
-                  </CardContent>
-                </Card>
-                {analysisResult.emotion && (
-                  <Card variant="outlined" sx={{ flex: "1 1 100%" }}>
-                    <CardContent>
-                      <Typography variant="subtitle2">
-                        Эмоциональный фон
-                      </Typography>
-                      <Typography variant="body1">
-                        {analysisResult.emotion}
-                      </Typography>
-                    </CardContent>
-                  </Card>
-                )}
-                {analysisResult.keywords.length > 0 && (
-                  <Card variant="outlined" sx={{ flex: "1 1 100%" }}>
-                    <CardContent>
-                      <Typography variant="subtitle2">
-                        Ключевые слова
-                      </Typography>
-                      <Stack direction="row" spacing={1} flexWrap="wrap" mt={1}>
-                        {analysisResult.keywords.map((kw, idx) => (
-                          <Chip key={idx} label={kw} size="small" />
-                        ))}
-                      </Stack>
-                    </CardContent>
-                  </Card>
-                )}
-              </Box>
-            </Paper>
-          )}
+    <Box sx={{ p: 3, maxWidth: 800, margin: '0 auto' }}>
+      <Typography variant="h4" gutterBottom>📞 NG911 Голосовой Терминал</Typography>
+      
+      <Paper sx={{ p: 3, mb: 3, textAlign: 'center', background: isCalling ? '#e3f2fd' : '#fff' }}>
+        <Box sx={{ position: 'relative', display: 'inline-block', mb: 2 }}>
+            <div style={{
+                width: 100, height: 100, borderRadius: '50%',
+                background: isRecording ? '#ef5350' : '#2196f3',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: `0 0 ${volume}px ${isRecording ? 'red' : 'blue'}`
+            }}>
+                {isRecording ? <RecordVoiceOver style={{ fontSize: 50, color: 'white' }} /> : <Mic style={{ fontSize: 50, color: 'white' }} />}
+            </div>
         </Box>
+        
+        <Typography variant="h6" gutterBottom>{status}</Typography>
 
-        <Box sx={{ flex: 1 }}>
-          <Paper sx={{ p: 3, height: "100%" }}>
-            <Typography variant="h6" gutterBottom>
-              Создание карточки обращения
-            </Typography>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              После анализа можно создать карточку обращения в системе. Она
-              появится в журнале обращений и на дашборде.
-            </Typography>
-
-            <Stack spacing={2}>
-              <Button
-                variant="contained"
-                startIcon={<Phone />}
-                onClick={handleSimulateCall}
-                disabled={
-                  !callText.trim() ||
-                  createCaseMutation.isPending ||
-                  !analysisResult
-                }
-                fullWidth
-                size="large"
-              >
-                {createCaseMutation.isPending ? (
-                  <CircularProgress size={24} />
-                ) : (
-                  "Создать обращение"
-                )}
-              </Button>
-
-              {createCaseMutation.isError && (
-                <Alert severity="error">
-                  Ошибка при создании обращения:{" "}
-                  {createCaseMutation.error?.message}
-                </Alert>
-              )}
-
-              {createdCase && (
-                <Alert severity="success">
-                  Обращение успешно создано! ID: {createdCase.id}
-                  <Button size="small" onClick={handleViewCase} sx={{ ml: 2 }}>
-                    Перейти к карточке
-                  </Button>
-                </Alert>
-              )}
-
-              <Divider />
-
-              <Typography variant="subtitle2">Инструкция</Typography>
-              <Typography variant="body2">
-                1. Введите текст обращения или используйте пример.
-                <br />
-                2. Нажмите "Анализировать" для определения категории, приоритета
-                и службы.
-                <br />
-                3. Нажмите "Создать обращение" для добавления в систему.
-                <br />
-                4. Перейдите в журнал обращений, чтобы увидеть новую запись.
-              </Typography>
-
-              <Divider />
-
-              <Typography variant="subtitle2">Соответствие ТЗ</Typography>
-              <Stack spacing={1}>
-                <Chip label="Модуль ASR/NLP" color="primary" size="small" />
-                <Chip
-                  label="Классификация происшествий"
-                  color="primary"
-                  size="small"
-                />
-                <Chip label="Приоритизация" color="primary" size="small" />
-                <Chip label="Определение службы" color="primary" size="small" />
-                <Chip label="Симуляция звонка" color="primary" size="small" />
-              </Stack>
-            </Stack>
-          </Paper>
-        </Box>
-      </Box>
-
-      <Paper sx={{ p: 3, mt: 3 }}>
-        <Typography variant="h6" gutterBottom>
-          Как это работает в реальной системе
-        </Typography>
-        <Typography variant="body2">
-          В реальном развёртывании платформы «Jedel» модуль интеллектуальной
-          речевой аналитики (ASR & NLP) будет работать в режиме реального
-          времени:
-        </Typography>
-        <ul>
-          <li>Автоматическое распознавание речи с поддержкой диалектов.</li>
-          <li>Детекция эмоций и стресса по голосу.</li>
-          <li>Геолокация звонящего через Advanced Mobile Location.</li>
-          <li>Видеотрансляция с места происшествия с анализом объектов.</li>
-          <li>
-            Smart Triage – автоматическая сортировка вызовов по критичности.
-          </li>
-        </ul>
-        <Typography variant="body2">
-          Данный симулятор демонстрирует ключевые возможности классификации и
-          приоритизации, которые уже реализованы в системе.
-        </Typography>
+        <Stack direction="row" spacing={2} justifyContent="center" mt={2}>
+            {!isCalling ? (
+                <Button variant="contained" size="large" color="primary" startIcon={<SettingsVoice />} onClick={startCall}>
+                    Начать звонок
+                </Button>
+            ) : (
+                <Button variant="contained" size="large" color="error" startIcon={<PhoneDisabled />} onClick={handleEndCall}>
+                    Завершить
+                </Button>
+            )}
+        </Stack>
       </Paper>
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={4000}
-        onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: "top", horizontal: "right" }}
-      >
-        <Alert
-          onClose={handleCloseSnackbar}
-          severity={snackbar.severity}
-          sx={{ width: "100%" }}
-        >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
 
-      {/* Уведомление о симуляции вызова */}
-      <Snackbar
-        open={callNotification.open}
-        autoHideDuration={6000}
-        onClose={handleCloseCallNotification}
-        anchorOrigin={{ vertical: "top", horizontal: "center" }}
-      >
-        <Alert
-          onClose={handleCloseCallNotification}
-          severity={callNotification.severity}
-          icon={<Notifications />}
-          sx={{ width: "100%" }}
-        >
-          {callNotification.message}
-        </Alert>
-      </Snackbar>
+      {/* Transcript Area */}
+      <Paper sx={{ p: 2, height: 300, overflowY: 'auto', mb: 3, bgcolor: '#f5f5f5' }}>
+          {transcript.length === 0 && <Typography color="text.secondary" align="center">История пуста...</Typography>}
+          {transcript.map((msg, i) => (
+              <Box key={i} sx={{ 
+                  display: 'flex', 
+                  justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                  mb: 1 
+              }}>
+                  <Paper sx={{ 
+                      p: 1.5, 
+                      bgcolor: msg.role === 'user' ? '#1976d2' : '#fff',
+                      color: msg.role === 'user' ? '#fff' : '#000',
+                      maxWidth: '80%'
+                  }}>
+                      <Typography variant="body1">{msg.text}</Typography>
+                  </Paper>
+              </Box>
+          ))}
+      </Paper>
 
-      {/* Модальное окно активного звонка */}
-      <ActiveCallModal
-        open={isVoiceModalOpen}
-        onClose={() => setIsVoiceModalOpen(false)}
-      />
+      {/* Incident Data Card */}
+      {incidentData && (
+          <Card variant="outlined">
+              <CardContent>
+                  <Typography variant="h6" gutterBottom>📋 Данные ЕРДР (Live)</Typography>
+                  <Stack direction="row" spacing={1} mb={1}>
+                      <Chip label={incidentData.priority?.toUpperCase()} color={incidentData.priority === 'critical' ? 'error' : 'warning'} />
+                      <Chip label={incidentData.categoryRu} />
+                  </Stack>
+                  <Typography><b>Район:</b> {incidentData.erdr_district}</Typography>
+                  <Typography><b>Служба:</b> {incidentData.dispatchToRu}</Typography>
+              </CardContent>
+          </Card>
+      )}
+
+      {/* Hidden Audio Player */}
+      <audio ref={aiAudioRef} style={{ display: 'none' }} />
     </Box>
   );
 };

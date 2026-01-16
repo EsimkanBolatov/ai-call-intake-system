@@ -1,17 +1,16 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { VoiceAiService } from './voice-ai.service';
 import { VoiceCallGateway } from './voice-call.gateway';
-import { VoiceCallController } from './voice-call.controller';
-import { CasesModule } from '../cases/cases.module'; // Подключаем модуль кейсов
+import { VoiceAiService } from './voice-ai.service'; // <-- Импорт
+import { CasesModule } from '../cases/cases.module';
+import { AiModule } from '../ai/ai.module';
 
 @Module({
   imports: [
-    ConfigModule, 
-    forwardRef(() => CasesModule) // Чтобы сохранять кейсы
+    forwardRef(() => CasesModule),
+    AiModule, 
   ],
-  providers: [VoiceAiService, VoiceCallGateway],
-  controllers: [VoiceCallController],
+  providers: [VoiceCallGateway, VoiceAiService], // <-- Добавлен в провайдеры
   exports: [VoiceAiService],
+  controllers: []
 })
 export class VoiceCallModule {}
