@@ -1,18 +1,16 @@
-import { WebSocketGateway, SubscribeMessage, MessageBody, ConnectedSocket, WebSocketServer } from '@nestjs/websockets';
+import { WebSocketGateway, SubscribeMessage, MessageBody, ConnectedSocket, WebSocketServer, OnGatewayDisconnect } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { VoiceAiService } from './voice-ai.service';
 import { randomUUID } from 'crypto';
 
 @WebSocketGateway({ cors: true })
-export class VoiceCallGateway {
+export class VoiceCallGateway implements OnGatewayDisconnect {
   @WebSocketServer() server: Server;
 
-  // Хранилище буферов для каждой сессии: sessionId -> Buffer[]
+  // Хранилище буферов: sessionId -> Buffer[]
   private sessionBuffers: Map<string, Buffer[]> = new Map();
-  // Блокировка обработки для сессии (чтобы не слать параллельные запросы)
-  private processingLocks: Map<string, boolean> = new Map();
-  // Время последнего обновления (для сброса по тайм-ауту)
-  private lastActivity: Map<string, number> = new Map();
+  // Таймеры сброса для каждой сессии
+  private flushTimers: Map<string, NodeJS.Timeout> = new Map();
 
   constructor(private readonly voiceAiService: VoiceAiService) {}
 
@@ -20,85 +18,88 @@ export class VoiceCallGateway {
   handleStartCall(@ConnectedSocket() client: Socket) {
     const sessionId = randomUUID();
     this.sessionBuffers.set(sessionId, []);
-    this.processingLocks.set(sessionId, false);
-    this.lastActivity.set(sessionId, Date.now());
     
+    // Инициализируем сессию
     client.emit('ai-call-started', { sessionId });
-    console.log(`Call started: ${sessionId}`);
+    console.log(`[Gateway] Call started: ${sessionId}`);
   }
 
   @SubscribeMessage('audio-chunk')
   async handleAudioChunk(@MessageBody() payload: { audioData: string, sessionId: string }, @ConnectedSocket() client: Socket) {
     const { sessionId, audioData } = payload;
-    if (!sessionId || !this.sessionBuffers.has(sessionId)) return;
+    if (!sessionId) return;
 
-    // 1. Накапливаем буфер
+    // 1. Инициализация буфера, если нет
+    if (!this.sessionBuffers.has(sessionId)) {
+        this.sessionBuffers.set(sessionId, []);
+    }
+
+    // 2. Добавляем данные
     const chunk = Buffer.from(audioData, 'base64');
-    const currentBuffer = this.sessionBuffers.get(sessionId);
-    currentBuffer.push(chunk);
-    this.lastActivity.set(sessionId, Date.now());
+    this.sessionBuffers.get(sessionId).push(chunk);
 
-    // 2. Проверяем размер буфера (например, накопили ~3 секунды аудио)
-    // 1 секунда 16kHz 16bit mono = 32kb. 3 сек ~ 100kb.
-    const totalLength = currentBuffer.reduce((acc, val) => acc + val.length, 0);
+    // 3. Сбрасываем старый таймер (debounce)
+    if (this.flushTimers.has(sessionId)) {
+        clearTimeout(this.flushTimers.get(sessionId));
+    }
+
+    // 4. Логика отправки:
+    // Если буфер накопился достаточно большим (> 32KB ~ 1 сек), отправляем сразу
+    const currentBufferSize = this.sessionBuffers.get(sessionId).reduce((acc, val) => acc + val.length, 0);
     
-    // Если буфер больше 64KB (около 2 секунд) и мы не заняты обработкой
-    if (totalLength > 64 * 1024 && !this.processingLocks.get(sessionId)) {
-        await this.processBuffer(sessionId, client);
+    if (currentBufferSize > 32 * 1024) {
+        await this.flushBuffer(sessionId, client);
+    } else {
+        // Иначе ждем 1.5 секунды тишины/паузы и отправляем
+        const timer = setTimeout(() => {
+            this.flushBuffer(sessionId, client);
+        }, 1500); 
+        this.flushTimers.set(sessionId, timer);
     }
   }
 
-  // Метод обработки накопленного буфера
-  private async processBuffer(sessionId: string, client: Socket) {
-      // Блокируем сессию
-      this.processingLocks.set(sessionId, true);
+  private async flushBuffer(sessionId: string, client: Socket) {
+      if (!this.sessionBuffers.has(sessionId)) return;
       
+      const buffers = this.sessionBuffers.get(sessionId);
+      if (buffers.length === 0) return;
+
+      // Склеиваем и очищаем СРАЗУ, чтобы новые данные шли в новый пакет
+      const fullBuffer = Buffer.concat(buffers);
+      this.sessionBuffers.set(sessionId, []); 
+
+      console.log(`[Gateway] Processing buffer: ${fullBuffer.length} bytes for ${sessionId}`);
+
       try {
-          // Забираем и склеиваем буфер
-          const buffers = this.sessionBuffers.get(sessionId);
-          if (!buffers || buffers.length === 0) return;
-          
-          const fullBuffer = Buffer.concat(buffers);
-          // Очищаем буфер для новых данных
-          this.sessionBuffers.set(sessionId, []);
-
-          console.log(`[Gateway] Processing buffer size: ${fullBuffer.length} bytes for ${sessionId}`);
-
-          // Отправляем в AI Service
           const result = await this.voiceAiService.processAudio(fullBuffer, sessionId);
 
-          // Отправляем ответ клиенту
           client.emit('ai-response', {
               text: result.text,
               response: result.response,
               audio: result.audio ? result.audio.toString('base64') : null,
               incident: result.incident
           });
-
-      } catch (error) {
-          console.error(`Error processing audio for ${sessionId}:`, error.message);
-      } finally {
-          // Снимаем блокировку
-          this.processingLocks.set(sessionId, false);
-          
-          // Если пока мы обрабатывали, накопился новый ОГРОМНЫЙ буфер - запускаем рекурсивно
-          // (но с задержкой, чтобы дать передышку)
-          const newBuffers = this.sessionBuffers.get(sessionId);
-          const newLength = newBuffers?.reduce((acc, val) => acc + val.length, 0) || 0;
-          if (newLength > 128 * 1024) {
-             setTimeout(() => this.processBuffer(sessionId, client), 100);
-          }
+      } catch (e) {
+          console.error(`[Gateway] Error processing audio: ${e.message}`);
       }
   }
 
   @SubscribeMessage('end-ai-call')
   handleEndCall(@MessageBody() data: { sessionId: string }) {
-      console.log(`Call ended: ${data.sessionId}`);
+      console.log(`[Gateway] Ending call: ${data.sessionId}`);
+      this.cleanupSession(data.sessionId);
       this.voiceAiService.endCall(data.sessionId);
-      
-      // Очистка памяти
-      this.sessionBuffers.delete(data.sessionId);
-      this.processingLocks.delete(data.sessionId);
-      this.lastActivity.delete(data.sessionId);
+  }
+
+  handleDisconnect(client: Socket) {
+      // Можно добавить логику очистки по socketId, если нужно
+  }
+
+  private cleanupSession(sessionId: string) {
+      if (this.flushTimers.has(sessionId)) {
+          clearTimeout(this.flushTimers.get(sessionId));
+          this.flushTimers.delete(sessionId);
+      }
+      this.sessionBuffers.delete(sessionId);
   }
 }
