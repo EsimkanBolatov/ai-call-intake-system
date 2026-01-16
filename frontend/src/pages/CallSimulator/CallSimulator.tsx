@@ -14,17 +14,6 @@ const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
   return btoa(binary);
 };
 
-const blobToBase64 = (blob: Blob): Promise<string> => {
-  return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-          const res = reader.result as string;
-          resolve(res.split(',')[1]);
-      };
-      reader.readAsDataURL(blob);
-  });
-};
-
 const CallSimulator: React.FC = () => {
   // UI States
   const [status, setStatus] = useState<string>("Готов к звонку");

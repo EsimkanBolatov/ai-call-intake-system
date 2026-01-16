@@ -1,14 +1,19 @@
-import { Module } from "@nestjs/common";
-import { ConfigModule } from "@nestjs/config";
-import { TypeOrmModule } from "@nestjs/typeorm";
-import { HealthController } from "./health.controller";
-import configuration from "./config/configuration";
-import { AuthModule } from "./modules/auth/auth.module";
-import { UsersModule } from "./modules/users/users.module";
-import { CasesModule } from "./modules/cases/cases.module";
-import { TelegramModule } from "./modules/telegram/telegram.module";
-import { VoiceCallModule } from "./modules/voice-call/voice-call.module"; // Импорт есть
-import { AiModule } from "./modules/ai/ai.module";
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
+
+// Modules
+import { VoiceCallModule } from './modules/voice-call/voice-call.module';
+import { CasesModule } from './modules/cases/cases.module';
+import { UsersModule } from './modules/users/users.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { ReportsModule } from './modules/reports/reports.module';
+import { TelegramModule } from './modules/telegram/telegram.module';
+import { OrganizationsModule } from './modules/organizations/organizations.module';
+
+// Configuration
+import { configuration } from './config/configuration';
 
 @Module({
   imports: [
@@ -16,19 +21,32 @@ import { AiModule } from "./modules/ai/ai.module";
       isGlobal: true,
       load: [configuration],
     }),
-    TypeOrmModule.forRoot({
-      type: "sqlite",
-      database: ":memory:",
-      autoLoadEntities: true,
-      synchronize: true,
+    ScheduleModule.forRoot(),
+    TypeOrmModule.forRootAsync({
+      useFactory: () => ({
+        type: 'postgres',
+        host: process.env.DB_HOST,
+        port: parseInt(process.env.DB_PORT, 10),
+        username: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+        autoLoadEntities: true,
+        synchronize: true, // В продакшене лучше false
+      }),
     }),
-    AuthModule,
-    UsersModule,
-    CasesModule,
-    TelegramModule,
+    
+    // ✅ Оставляем только нужные модули
     VoiceCallModule, 
-    AiModule,
+    CasesModule,
+    UsersModule,
+    AuthModule,
+    ReportsModule,
+    TelegramModule,
+    OrganizationsModule,
+    
+    // ❌ УДАЛИТЕ СТРОКУ: AiModule
   ],
-  controllers: [HealthController],
+  controllers: [],
+  providers: [],
 })
 export class AppModule {}
